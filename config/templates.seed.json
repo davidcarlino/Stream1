@@ -1,0 +1,71 @@
+[
+  {
+    "name": "Sunday Morning",
+    "titlePattern": "Sunday Morning Service — {date}",
+    "descriptionPattern": "{church_name} livestream, {date} at {time}.\n\n{giving_link}",
+    "defaultPrivacy": "public",
+    "defaultTime": "09:00",
+    "timePresets": [
+      { "label": "9 AM", "time": "09:00" },
+      { "label": "9:30 AM", "time": "09:30" },
+      { "label": "10 AM", "time": "10:00" }
+    ],
+    "playlistKey": "sunday",
+    "extraFields": []
+  },
+  {
+    "name": "Sunday Evening",
+    "titlePattern": "Sunday Evening Service — {date}",
+    "descriptionPattern": "{church_name} livestream, {date} at {time}.\n\n{giving_link}",
+    "defaultPrivacy": "public",
+    "defaultTime": "18:00",
+    "timePresets": [
+      { "label": "6 PM", "time": "18:00" },
+      { "label": "6:30 PM", "time": "18:30" }
+    ],
+    "playlistKey": "sunday",
+    "extraFields": []
+  },
+  {
+    "name": "Saturday Night Mass",
+    "titlePattern": "Saturday Night Mass — {date}",
+    "descriptionPattern": "{church_name} Saturday Vigil Mass, {date} at {time}.\n\n{giving_link}",
+    "defaultPrivacy": "public",
+    "defaultTime": "17:00",
+    "timePresets": [
+      { "label": "5 PM Vigil", "time": "17:00" },
+      { "label": "6 PM", "time": "18:00" }
+    ],
+    "playlistKey": "sunday",
+    "extraFields": []
+  },
+  {
+    "name": "Funeral",
+    "titlePattern": "Funeral Service for {name} — {date}",
+    "descriptionPattern": "Livestream of the funeral service for {name}, {date} at {time}. Hosted by {church_name}.",
+    "defaultPrivacy": "unlisted",
+    "timePresets": [
+      { "label": "Morning", "time": "10:00" },
+      { "label": "Afternoon", "time": "14:00" }
+    ],
+    "playlistKey": "private_events",
+    "extraFields": [
+      { "key": "name", "label": "Name of the deceased", "required": true }
+    ]
+  },
+  {
+    "name": "Wedding",
+    "titlePattern": "Wedding of {name} — {date}",
+    "descriptionPattern": "Livestream of the wedding of {name}, {date} at {time}. Hosted by {church_name}.",
+    "defaultPrivacy": "unlisted",
+    "timePresets": [
+      { "label": "Morning", "time": "11:00" },
+      { "label": "Afternoon", "time": "14:00" },
+      { "label": "Evening", "time": "17:00" }
+    ],
+    "playlistKey": "private_events",
+    "extraFields": [
+      { "key": "name", "label": "Names of the couple", "required": true }
+    ]
+  }
+]

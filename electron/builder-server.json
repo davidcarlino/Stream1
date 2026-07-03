@@ -1,0 +1,54 @@
+{
+  "appId": "com.stream1.server",
+  "productName": "STREAM1 Server",
+  "copyright": "Copyright © 2026 David Carlino",
+  "compression": "maximum",
+  "electronLanguages": ["en-US"],
+  "npmRebuild": false,
+  "buildDependenciesFromSource": false,
+  "removePackageScripts": true,
+  "publish": null,
+  "directories": {
+    "output": "dist"
+  },
+  "extraMetadata": {
+    "main": "electron/server/main.js",
+    "author": "David Carlino",
+    "description": "STREAM1 Server - Local database and streaming backend"
+  },
+  "files": [
+    "server/**/*",
+    "public/**/*",
+    "config/**/*",
+    "electron/server/**/*",
+    "electron/shared/**/*",
+    "package.json",
+    "!**/*.{map,md,ts}",
+    "!**/test/**",
+    "!**/__tests__/**",
+    "!**/.github/**"
+  ],
+  "extraResources": [
+    { "from": "vendor/yt-dlp", "to": "vendor/yt-dlp" },
+    { "from": "vendor/ffmpeg", "to": "vendor/ffmpeg" },
+    { "from": "vendor/mongodb", "to": "vendor/mongodb" }
+  ],
+  "win": {
+    "target": [
+      {
+        "target": "portable",
+        "arch": ["x64"]
+      }
+    ],
+    "icon": "public/assets/img/logos/STREAM1 ICON.png",
+    "legalTrademarks": "STREAM1",
+    "signAndEditExecutable": false,
+    "signtoolOptions": {
+      "publisherName": "David Carlino"
+    },
+    "artifactName": "STREAM1 Server.${ext}"
+  },
+  "portable": {
+    "artifactName": "STREAM1 Server.exe"
+  }
+}

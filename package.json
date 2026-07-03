@@ -1,0 +1,72 @@
+{
+  "name": "stream1",
+  "version": "1.0.0",
+  "private": true,
+  "description": "STREAM1 - Pro Streaming Management Software",
+  "author": "David Carlino",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "start:app": "electron electron/app/main.js",
+    "gui:server": "electron electron/server/main.js",
+    "gui:app": "electron electron/app/main.js",
+    "dev": "node scripts/dev.js",
+    "fetch:mongod": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/fetch-mongod.ps1",
+    "fetch:ytdlp": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/fetch-yt-dlp.ps1",
+    "fetch:ffmpeg": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/fetch-ffmpeg.ps1",
+    "bundle": "node scripts/bundle-public.js",
+    "seed:users": "node scripts/seed-users.js",
+    "cert:signing": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/create-signing-cert.ps1",
+    "verify:deps": "node scripts/verify-build-deps.js",
+    "prebuild:server": "node scripts/verify-build-deps.js",
+    "prebuild": "node scripts/verify-build-deps.js",
+    "clean:dist": "node scripts/clean-dist.js",
+    "_build:server": "npm run bundle && node scripts/run-builder.js server",
+    "_build:app": "node scripts/run-builder.js app",
+    "build:server": "npm run clean:dist && npm run _build:server && node scripts/clean-dist.js --prune",
+    "build:server:dir": "npm run bundle && node scripts/run-builder.js server --dir -c.directories.output=build/unpacked-server",
+    "build:app": "npm run clean:dist && npm run _build:app && node scripts/clean-dist.js --prune",
+    "build:app:dir": "node scripts/run-builder.js app --dir -c.directories.output=build/unpacked-app",
+    "build": "npm run clean:dist && npm run _build:server && npm run _build:app && node scripts/clean-dist.js --prune",
+    "all": "npm install && npm run build && npm run bundle",
+    "build:cli-server": "npm run bundle && pkg server/index.js -t node18-win-x64 -o build/cli/stream1-server.exe",
+    "build:cli-app": "pkg launcher/index.js -t node18-win-x64 -o build/cli/stream1-app.exe",
+    "build:cli": "npm run build:cli-server && npm run build:cli-app",
+    "manifest:update": "node scripts/generate-update-manifest.js",
+    "publish:update": "node scripts/publish-update.js",
+    "verify:git-safe": "node scripts/verify-git-safe.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "pkg": {
+    "assets": [
+      "public/**/*",
+      "config/**/*"
+    ],
+    "targets": [
+      "node18-win-x64"
+    ],
+    "outputPath": "dist"
+  },
+  "dependencies": {
+    "@googleapis/youtube": "^33.0.0",
+    "bcryptjs": "^2.4.3",
+    "connect-mongo": "^5.1.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.4.1",
+    "express-session": "^1.18.1",
+    "gh": "^2.8.9",
+    "google-auth-library": "^10.5.0",
+    "helmet": "^8.0.0",
+    "mongodb": "^6.12.0",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "nodemon": "^3.1.9",
+    "pkg": "^5.8.1"
+  }
+}

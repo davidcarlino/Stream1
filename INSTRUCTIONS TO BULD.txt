@@ -1,0 +1,361 @@
+# STREAM1 — Church YouTube Streaming Automation — Build Spec
+
+**Purpose of this document:** hand this to a developer/AI coding agent (Cursor, Devin, etc.) as a complete requirements spec. It assumes zero prior context.
+
+---
+
+## 1. Problem Statement
+
+The church currently streams via an ATEM switcher pushing RTMP to a YouTube stream key. Today, someone manually manages stream keys/broadcasts in YouTube Studio, which is error-prone for a non-technical volunteer team. The church needs:
+
+- Sunday AM and PM services streamed live to YouTube, **publicly**, and embedded on the church website.
+- Funerals and weddings streamed live to YouTube, but **not publicly discoverable** (family/friends only, via a private link) — not mixed in with the public service archive.
+- A dead-simple local tool a computer-illiterate volunteer can use to "set up today's stream" with a couple of clicks, without ever touching stream keys, YouTube Studio, or playlist settings.
+- Staff can log in, create and manage their own reusable templates (with variables), and see/manage a history of every past stream — with playback, download, and share options — right in the app.
+- The ATEM hardware config should **never need to change**. It should always push to the same stream key, every time, forever.
+- The app should surface clearly when something is broken (YouTube auth expired, stream key deleted, etc.) instead of failing silently.
+
+---
+
+## 2. Core Architecture Decision (read this first)
+
+YouTube's Live Streaming API separates two resources:
+
+| Resource | What it is | Changes? |
+|---|---|---|
+| **`liveStream`** | The RTMP ingest endpoint + stream key. What ATEM connects to. | **Created once. Never changes.** ATEM is configured one time and never touched again. |
+| **`liveBroadcast`** | The actual "event": title, description, scheduled time, privacy (public/unlisted/private), which playlist it belongs to, embeddability. | **Created fresh for every service/event** by our webapp. |
+
+A broadcast is *bound* to a stream via the `liveBroadcasts.bind` API call. The same stream can be bound to a new broadcast every single time — this is the officially supported replacement for YouTube's old "default broadcast" feature (deprecated). This is exactly the mechanism that lets ATEM's config stay static while the "what this stream actually is" (title/privacy/playlist) changes per event.
+
+**Do not** try to reuse a single YouTube video for all streams, and do not require ATEM's stream key to change per event. Both of those approaches fight the platform. One persistent stream, many broadcasts bound to it over time, is the correct and Google-documented pattern.
+
+### High-level flow
+
+1. **One-time setup (developer/admin does this once):**
+   - Create a Google Cloud project, enable "YouTube Data API v3."
+   - Create OAuth 2.0 credentials (Web app type — see §6).
+   - Run the app once, complete the Google OAuth consent flow as the church's YouTube channel owner, and store the resulting refresh token.
+   - App creates (or the admin points it at) one persistent `liveStream` resource. Its stream key gets punched into ATEM once. Done forever.
+
+2. **Every week / every event (volunteer does this):**
+   - Open the local webapp (`http://localhost:PORT`) and log in (see §3).
+   - Click **New Stream**, pick a template, fill in the small form (date/time/name as needed), confirm privacy.
+   - App creates a new `liveBroadcast` via the API, sets title/description from the template (substituting variables), sets privacy + playlist, binds it to the one persistent `liveStream`, and enables `enableAutoStart` / `enableAutoStop`.
+   - App displays a big green confirmation: *"Ready. Just start streaming on ATEM as usual."*
+   - Volunteer hits Stream on ATEM. YouTube auto-detects incoming data and auto-transitions the broadcast to live — **nobody touches YouTube Studio.** When ATEM stops streaming, YouTube auto-ends the broadcast ~1 minute later.
+
+3. **Website embed:**
+   - The public playlist (Sunday Services) is embedded on the church website via YouTube's standard playlist embed iframe — it always shows whatever the latest/live video in that playlist is, no manual embed-code updates ever needed.
+   - Funeral/wedding videos live in a **separate, unlisted playlist that is never linked from the website**. The app gives the volunteer a shareable link.
+
+---
+
+## 3. App Login (separate from the YouTube connection)
+
+The app itself needs a lightweight login layer so it isn't wide open to anyone on the church network, and so template edits/history can (optionally) be attributed to a user. This is **not** the same as the Google OAuth connection in §6 — that's the app authenticating to YouTube; this is a person authenticating to the app.
+
+- Simple local auth: username + password, stored as bcrypt hashes in the local store (`store.js`). No need for a full user-management system or external identity provider — this is a single-building, small-staff tool.
+- One "admin" role (can edit templates, account settings, and the YouTube connection) and optionally a "staff" role (can create streams and view history, but not touch settings) — a single role is fine for v1 if that's simpler; make roles configurable but don't over-build this.
+- Session-based auth (e.g. `express-session` with a local session store) — login persists across app restarts is not required, but should persist through normal use (long-lived cookie, e.g. 30 days) so staff aren't re-logging in constantly.
+- Login screen is the first thing shown at `http://localhost:PORT` if no valid session exists. Everything else (New Stream, History, Templates, Settings) requires being logged in.
+- First-run: app should prompt to create the first admin account rather than shipping a default password.
+- Password reset: since this is localhost-only with no email server, "reset" can simply be an admin-only "reset a user's password" screen, or worst case a documented way to delete `store.json`'s users section and re-run first-run setup.
+
+---
+
+## 4. Templates (user-created, with variables)
+
+Templates are no longer a fixed hardcoded list — staff create, edit, and delete their own templates from within the app. Ship with the same four as **starter examples** (Sunday Morning, Sunday Evening, Funeral, Wedding), but nothing is hardcoded in code; it's all data.
+
+### 4.1 Template fields (editable in UI)
+- Template name (internal label shown on the "New Stream" screen, e.g. "Sunday Morning")
+- Title pattern (supports variables, e.g. `Sunday Morning Service — {date}`)
+- Description pattern (supports variables, e.g. `{church_name} livestream, {date} at {time}. {giving_link}`)
+- Default privacy: `public` / `unlisted` / `private`
+- Target playlist (pick from existing YouTube playlists, pulled live from the connected account — see §6.3 — or create a new one from within this screen)
+- Which extra fields the "New Stream" form should ask for when this template is used (e.g. Funeral/Wedding need a "name" field; Sunday templates don't)
+
+### 4.2 Supported variables
+Variables are substituted into the title/description at creation time. Minimum required set:
+
+| Variable | Resolves to |
+|---|---|
+| `{date}` | The date chosen on the New Stream form (default: today), formatted per account settings (see §4.3), e.g. `June 29, 2026` |
+| `{time}` | The time chosen on the form, e.g. `10:00 AM` |
+| `{name}` | Free-text field entered on the form (used for funeral/wedding subject names) |
+| `{church_name}` | Pulled from Account Settings (§4.3) |
+| Any other account-setting key | Any additional key/value pairs defined in Account Settings should also be usable as `{key}` in templates — e.g. `{giving_link}`, `{pastor_name}`, `{address}` |
+
+Template editor should show the list of available variables next to the title/description fields so staff don't have to guess syntax (e.g. small chips they can click to insert).
+
+### 4.3 Account Settings
+A settings screen (admin only) holding reusable key/value pairs referenced by templates:
+- `church_name`
+- Date format preference (e.g. `Month D, YYYY` vs `DD/MM/YYYY`)
+- Any other free-form key/value pairs staff want available as template variables (e.g. `giving_link`, `pastor_name`, `phone_number`)
+- The YouTube connection status and the persistent stream key info (see §6) also lives here
+
+### 4.4 New Stream flow using templates
+1. Staff clicks **New Stream**.
+2. Picks a template from their saved list (shown as cards/buttons, not a dropdown — keep it big and visual).
+3. Form appears, pre-populated with today's date/current time, plus any extra fields the template requires (e.g. name).
+4. **Privacy selector is always shown and editable** on this form (defaulting to the template's default privacy, but staff can override per-event — e.g. a normally-public template streamed unlisted for a special closed event).
+5. Preview of the resolved title/description shown before submitting (variables already substituted) so staff can catch typos.
+6. Click **Create Stream** → same YouTube API sequence as before (§8).
+
+---
+
+## 5. History Panel
+
+A dedicated **History** screen listing past (and in-progress/live) streams, pulled directly from the connected YouTube account rather than only relying on the app's local log — so it stays accurate even if a broadcast was touched manually in YouTube Studio.
+
+### 5.1 Data source
+- On load, sync via YouTube API (`liveBroadcasts.list` and/or `playlistItems.list` across the app's managed playlists) merged with the local history log (which has the template name/variables used, for context YouTube itself doesn't store).
+- Cache results locally (with a manual "Refresh" button) to avoid hammering quota on every page load.
+
+### 5.2 Per-stream row/card, shows:
+- Thumbnail + title + date + status (Live / Upcoming / Ended / Processing)
+- Privacy badge (Public / Unlisted / Private) — **editable inline**, calls `liveBroadcasts.update` / `videos.update` to change `status.privacyStatus` on the fly (e.g. staff decide after the fact to make a funeral stream fully private, or a normally-unlisted event public)
+- Inline **playback**: clicking the card/thumbnail expands an embedded YouTube player right in the panel (no need to leave the app)
+- **Download button** (right side): see caveat below
+- **Share button** (right side): opens a small share panel — copyable direct link, and (nice-to-have) native OS share sheet / quick share to email or SMS. For unlisted/private videos this is the primary way staff get the link to a family.
+
+> **Caveat to flag to the developer:** the YouTube Data API does **not** provide an endpoint to download the raw video file — that's intentionally not exposed by Google. Studio's own "Download" feature is a browser-session action, not an API call, so it can't be replicated purely via REST without scraping (which would violate YouTube's terms of service and shouldn't be built). Two honest options for the "Download" button:
+>   1. **Recommended:** the Download button deep-links to that video's page in YouTube Studio (`https://studio.youtube.com/video/{videoId}/edit`), where the owner can use YouTube's native download option if enabled for the channel.
+>   2. If true local downloads are a hard requirement, that needs a separate, explicitly-approved tool (e.g. `yt-dlp`) run manually by an admin — call this out as a v2/optional feature, not bundled into the default build, since it's a different legal/ToS conversation than the rest of this app.
+
+### 5.3 Issue indicators on history rows
+If a listed broadcast/stream has a problem (see §7), show a small warning icon/badge on that row rather than failing the whole panel.
+
+---
+
+## 6. YouTube Account Connection
+
+### 6.1 OAuth 2.0 (Google)
+- Use `google-auth-library` + `googleapis` npm packages.
+- Google Cloud Console setup (one-time, do this first):
+  1. Create a project.
+  2. Enable **YouTube Data API v3**.
+  3. Configure OAuth consent screen (External, or Internal if using Google Workspace for the church). Add the church's YouTube-channel-owning Google account as a test user if the app stays in "Testing" publishing status (fine for a single-church internal tool — avoids needing Google's app verification review).
+  4. Create OAuth Client ID — type **Web application**, with redirect URI `http://localhost:PORT/oauth2callback`.
+  5. Download client ID + secret into `.env` (never commit to source control).
+- Scopes needed: `https://www.googleapis.com/auth/youtube` (full read/write — needed for liveBroadcasts/liveStreams/playlists management).
+- Flow:
+  1. First connection: admin clicks "Connect YouTube Account" in Settings → opens Google's OAuth consent screen → church admin logs in as the channel owner and approves → Google redirects back to `localhost` with an auth code → app exchanges it for access + **refresh token** → refresh token stored (encrypted at rest / restricted file permissions) → never needs to be repeated.
+  2. On every subsequent run, app uses the stored refresh token to silently get new access tokens.
+  3. "Disconnect / Re-authenticate YouTube" is available any time from Settings.
+
+### 6.2 Persistent stream setup
+- Created once during first-run setup (see §9.1). Stream key displayed clearly in Account Settings with a "Copy" button and a note: *"Enter this into ATEM once. You will never need to do this again."*
+
+### 6.3 Pulling live account data
+The app should treat the YouTube account as the source of truth where possible rather than only its own local copy:
+- Playlists list (for template playlist-picker and history) — pulled live via `playlists.list`, not hardcoded.
+- Stream/broadcast status — pulled live for the History panel and for the issue-detection in §7.
+
+---
+
+## 7. Issue / Error Detection
+
+The app must surface problems clearly instead of silently failing. Build a small "system health" check that runs on app load and periodically (e.g. every few minutes while the app is open), plus inline handling at the moment of stream creation.
+
+### 7.1 Conditions to detect and surface
+| Issue | How to detect | What to show |
+|---|---|---|
+| OAuth failure / refresh token revoked or expired | A YouTube API call returns `401`/`invalid_grant` | Red banner across the top of every screen: *"YouTube connection lost. Reconnect required."* with a one-click "Reconnect" button that re-runs the OAuth flow |
+| Persistent stream key deleted or missing | `liveStreams.list` for the stored stream ID returns not-found | Red banner: *"Your stream key is missing from YouTube. Recreate it before your next event."* with a "Recreate Stream Key" button (re-runs the one-time stream-creation step, and clearly reminds staff the new key must be re-entered in ATEM) |
+| A specific broadcast stuck in `testStarting`/`liveStarting` | Poll status after creation / show on History row | Inline warning with a "Cancel & Recreate" button (delete that broadcast, create a fresh one bound to the same stream — this is Google's own documented recovery path) |
+| API quota exceeded | `403` quota error from Google | Plain-language banner: *"YouTube is temporarily unavailable (daily limit reached). Try again later."* — this should be rare given usage volume, but must not crash the app |
+| No internet connectivity | Fetch/network error | *"Can't reach YouTube right now — check your internet connection."* |
+
+### 7.2 General rule
+Never show a raw stack trace, JSON error blob, or HTTP status code to the end user. Log the technical detail to console/file for the developer; show staff a short, plain-English sentence and, wherever possible, a button that fixes it.
+
+---
+
+## 8. Privacy status — use `unlisted`, not `private`, as the funeral/wedding default
+
+YouTube's `private` videos are only viewable by specific Google accounts the owner explicitly grants access to — they can't be shared by simple link to a grieving family who may not have (or want to use) a Google account. `unlisted` videos are viewable by anyone with the link, don't appear in search/channel listings/subscriptions, and **can be embedded**. Default funerals/weddings to `unlisted`, but since §4.4 always shows a privacy selector, staff can still choose `private` or `public` per event if they genuinely want to.
+
+---
+
+## 9. Functional Requirements Checklist
+
+### 9.1 First-run setup wizard (admin-only, one-time)
+- [ ] Create first admin login (username/password).
+- [ ] "Connect YouTube Account" → OAuth flow (§6.1).
+- [ ] Auto-create (or let admin select an existing) persistent `liveStream` resource — display Stream Key + Server URL with a "Copy" button.
+- [ ] Create/select starter playlists ("Sunday Services" — public, "Funerals & Weddings" — unlisted) and store their IDs.
+- [ ] Show the live embed code for the "Sunday Services" playlist for pasting into the church website's CMS.
+- [ ] Seed the four starter templates (editable/deletable afterward).
+
+### 9.2 Login
+- [ ] Login screen gates the whole app.
+- [ ] Session persists across normal use (long-lived cookie).
+- [ ] Admin can create/manage additional logins if multiple staff need access.
+
+### 9.3 Templates
+- [ ] List, create, edit, delete templates.
+- [ ] Variable substitution (`{date}`, `{time}`, `{name}`, plus any Account Settings key) with a visible list of available variables in the editor.
+- [ ] Playlist picker pulls live playlists from the connected YouTube account, with an option to create a new playlist inline.
+
+### 9.4 New Stream
+- [ ] Template picker (visual cards).
+- [ ] Auto-filled date/time, editable.
+- [ ] Extra fields per template (e.g. name) shown conditionally.
+- [ ] Privacy selector (defaults to template default, always overridable).
+- [ ] Live preview of resolved title/description before submitting.
+- [ ] On submit: create broadcast → bind to persistent stream → add to playlist → confirmation screen with video link, Copy Link button, and "You're all set — start streaming from ATEM as usual."
+- [ ] On failure: plain-English error per §7, "Try Again" button.
+
+### 9.5 History
+- [ ] Pulls from YouTube account directly (not only local log), with manual refresh.
+- [ ] Inline playback per stream.
+- [ ] Download button per stream (Studio deep-link per §5.2 caveat).
+- [ ] Share button per stream (copy link + share sheet).
+- [ ] Inline privacy editor per stream (public/unlisted/private).
+- [ ] Issue badges on affected rows.
+
+### 9.6 Account Settings (admin)
+- [ ] Church name, date format, and arbitrary key/value variables for templates.
+- [ ] YouTube connection status + Reconnect button.
+- [ ] Persistent stream key display + Recreate button.
+- [ ] User management (if multi-login).
+
+### 9.7 System-wide
+- [ ] Top-of-app health banner per §7 whenever an issue is detected.
+- [ ] No raw errors ever shown to end users.
+
+---
+
+## 10. Tech Stack
+
+- **Backend:** Node.js + Express, structured as a **REST API** (see §11 for endpoints) consumed by the frontend — keeps the two layers cleanly separated even though both run on the same machine.
+- **YouTube integration:** `googleapis` npm package (official Google API client).
+- **Frontend:** Single-page app calling the REST API (plain JS/fetch, or a light framework if the developer prefers — React is fine but not required). Keep the UI extremely simple: big buttons, large text, minimal choices, no jargon, since this is for computer-illiterate users.
+- **Auth:** `express-session` (or `jsonwebtoken` if the developer prefers stateless tokens) for app login; `google-auth-library` for the separate YouTube OAuth connection.
+- **Storage:** No external database needed. A local JSON store (or SQLite if the developer wants proper querying/history) holding: user accounts (hashed passwords), OAuth refresh token, persistent stream ID, templates, account settings, and a local history/audit log.
+- **Hosting:** Runs locally on the church media computer at `http://localhost:PORT`, started manually or via a startup shortcut. No public internet exposure needed — only outbound HTTPS calls to Google.
+
+---
+
+## 11. REST API Endpoints (suggested)
+
+All routes except `/login` and `/api/auth/*` require a valid session.
+
+```
+POST   /api/auth/login
+POST   /api/auth/logout
+GET    /api/auth/session            # who's logged in, used for route guarding
+
+GET    /api/setup/status            # is first-run setup complete?
+POST   /api/setup/connect-youtube   # kicks off OAuth flow
+GET    /oauth2callback              # Google redirects here
+POST   /api/setup/create-stream     # creates the one persistent liveStream
+
+GET    /api/templates
+POST   /api/templates
+PUT    /api/templates/:id
+DELETE /api/templates/:id
+
+GET    /api/playlists               # live from YouTube
+POST   /api/playlists               # create new
+
+GET    /api/settings
+PUT    /api/settings
+
+POST   /api/streams                 # create a new broadcast from a template + form data
+GET    /api/streams                 # history list (merged local + YouTube)
+GET    /api/streams/:id
+PUT    /api/streams/:id/privacy     # public/unlisted/private
+DELETE /api/streams/:id             # cancel/recreate flow for stuck broadcasts
+
+GET    /api/health                  # OAuth status, stream key status, quota status — powers the issue banner
+```
+
+---
+
+## 12. Suggested Repo Structure
+
+```
+church-streaming/
+├── server/
+│   ├── index.js               # Express app entry, mounts REST routes
+│   ├── routes/
+│   │   ├── auth.js
+│   │   ├── setup.js
+│   │   ├── templates.js
+│   │   ├── playlists.js
+│   │   ├── settings.js
+│   │   ├── streams.js
+│   │   └── health.js
+│   ├── youtube.js              # All YouTube API calls (createStream, createBroadcast, bindStream, addToPlaylist, listBroadcasts, updatePrivacy)
+│   ├── auth/
+│   │   ├── appAuth.js          # local login/session logic
+│   │   └── googleAuth.js       # OAuth flow, refresh token storage
+│   ├── templates.js            # template variable substitution engine
+│   └── store.js                # JSON/SQLite read/write (users, tokens, templates, settings, history)
+├── public/                     # Frontend (SPA)
+│   ├── index.html
+│   ├── login.html
+│   ├── new-stream.html
+│   ├── history.html
+│   ├── templates.html
+│   ├── settings.html
+│   └── app.js / components...
+├── config/
+│   └── templates.seed.json     # starter templates loaded on first run
+├── .env.example                 # GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, SESSION_SECRET, PORT
+├── package.json
+└── README.md                    # Setup instructions for the church (in plain English)
+```
+
+---
+
+## 13. YouTube API Notes for the Developer
+
+- Package: `googleapis` (Node) — use the `youtube('v3')` client.
+- Key methods:
+  - `youtube.liveStreams.insert` — create the one persistent stream (setup only; store its `id`).
+  - `youtube.liveStreams.list` — used by the health check (§7) to confirm the stream still exists.
+  - `youtube.liveBroadcasts.insert` — create each new event. Required fields: `snippet.title`, `snippet.scheduledStartTime`, `status.privacyStatus`, `contentDetails.enableAutoStart: true`, `contentDetails.enableAutoStop: true`, `contentDetails.enableDvr: true` (watchable on-demand after).
+  - `youtube.liveBroadcasts.bind` — bind the new broadcast's `id` to the persistent stream's `id` via the `streamId` param.
+  - `youtube.liveBroadcasts.list` — pull broadcast status for History and health checks.
+  - `youtube.liveBroadcasts.update` / `youtube.videos.update` — used by the inline privacy editor in History.
+  - `youtube.playlists.insert` / `.list` — create/list playlists.
+  - `youtube.playlistItems.insert` — add a broadcast's video to the appropriate playlist after creation.
+- Auto-start/auto-stop (`enableAutoStart`/`enableAutoStop`) removes the need to ever call `liveBroadcasts.transition` manually — YouTube starts the broadcast automatically once it detects incoming RTMP data on the bound stream, and ends it ~1 minute after the feed stops. This is the mechanism that lets the volunteer's job stay "just press stream on ATEM."
+- Quota: each write call costs a modest amount of the default 10,000 units/day quota; a few events a week plus periodic history/health polling is nowhere close to any limit — but avoid polling too aggressively (e.g. health check every few minutes, not every few seconds).
+- If a broadcast ever gets stuck in a `testStarting`/`liveStarting` state (rare, e.g. a network blip), the documented recovery is to delete that broadcast and create a new one bound to the same stream — this is the "Cancel & Recreate" button referenced in §7.1 and §9.5.
+
+---
+
+## 14. Out of Scope (explicitly, to keep this buildable)
+
+- No mobile app.
+- No multi-church / multi-tenant support — single YouTube channel only.
+- No automatic calendar-based scheduling (staff manually clicks New Stream each time) — a good v2 feature (e.g. auto-create next Sunday's two broadcasts every Monday via a cron job), not required for v1.
+- No true local video file downloads via the app — see the caveat in §5.2; the API doesn't support it, and any workaround (e.g. `yt-dlp`) is a separate, explicitly-approved v2 decision, not bundled by default.
+
+---
+
+## 15. Definition of Done
+
+- Staff log in to the app before doing anything else.
+- Church admin can connect their YouTube account once and never log in to Google again.
+- ATEM's stream key is entered exactly once and never changes again, regardless of how many services/funerals/weddings happen afterward.
+- Staff can create, edit, and delete their own templates, using `{date}`, `{time}`, `{name}`, and any custom account-setting variables.
+- A non-technical volunteer can create a correctly-configured, correctly-private, correctly-playlisted YouTube live event in under 30 seconds, in under 4 clicks, with zero YouTube-specific knowledge.
+- Sunday services show up automatically embedded on the website with no manual embed-code changes, ever.
+- Funeral/wedding streams never appear on the public website or public channel listing, and can be shared via a simple link from the History panel.
+- History panel shows every past stream with working inline playback, a working share link, a working privacy toggle, and an honest download option (Studio deep-link).
+- If the YouTube connection breaks or the stream key is deleted, the app shows a clear, actionable banner instead of silently failing at the worst possible moment (mid-setup on a Sunday morning).
+
+---
+
+## 16. Public Event Portal (companion spec, separate app)
+
+A public-facing subdomain (e.g. `event.stream1.xxx`) where families enter an access code, or click a direct share link, to watch a funeral/wedding stream — without any of the admin/staff tooling in this document being exposed to the internet. This is a **separate deployable app** from everything else in this document, with its own hosting, its own database credentials, and its own trust boundary (public internet vs. this app's localhost-only design).
+
+Full requirements, data model, security model (rate limiting, code hashing, no-enumeration, the honest limits of "unlisted + a code" vs. true `private` sharing), and the small integration hook needed back in this app (generating the share code/link at stream-creation time for unlisted templates) are specified in `../event-portal/README.md`. That document is standalone build-ready; this section exists only so a reader of this spec knows the portal exists and where to find it.

@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>STREAM1</title>
+    <style>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #0f172a;
+        color: #f8fafc;
+        font-family: "Segoe UI", sans-serif;
+        text-align: center;
+        padding: 32px;
+      }
+      .logo {
+        width: 64px;
+        height: 64px;
+        margin: 0 auto 20px;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 1.5rem;
+      }
+      p {
+        margin: 0 auto;
+        color: #94a3b8;
+        max-width: 420px;
+        line-height: 1.5;
+      }
+      .actions {
+        margin-top: 28px;
+        display: flex;
+        gap: 12px;
+        justify-content: center;
+        flex-wrap: wrap;
+      }
+      button {
+        font-family: inherit;
+        font-size: 1rem;
+        font-weight: 700;
+        padding: 12px 22px;
+        border-radius: 12px;
+        border: none;
+        cursor: pointer;
+      }
+      #retry {
+        background: #2563eb;
+        color: #fff;
+      }
+      #retry:hover { background: #1d4ed8; }
+      #retry:disabled { opacity: 0.6; cursor: wait; }
+      .hint {
+        margin-top: 16px;
+        font-size: 0.9rem;
+        color: #64748b;
+      }
+    </style>
+  </head>
+  <body>
+    <div>
+      <div class="logo">
+        <svg viewBox="0 0 100 100" width="64" height="64" aria-hidden="true">
+          <circle cx="50" cy="50" r="45" fill="#2563eb" />
+          <polygon points="40,32 72,50 40,68" fill="white" />
+        </svg>
+      </div>
+      <h1 id="title">Cannot connect</h1>
+      <p id="detail">Start STREAM1 Server and try again.</p>
+      <p class="hint" id="hint" hidden>Open STREAM1 Server and choose or create a database folder, then click Refresh.</p>
+      <div class="actions">
+        <button type="button" id="retry">Refresh</button>
+      </div>
+    </div>
+    <script>
+      const titleEl = document.getElementById('title');
+      const detailEl = document.getElementById('detail');
+      const hintEl = document.getElementById('hint');
+      const retryBtn = document.getElementById('retry');
+
+      if (window.stream1 && window.stream1.onConnectError) {
+        window.stream1.onConnectError((data) => {
+          titleEl.textContent = data.title || 'Cannot connect';
+          detailEl.textContent = data.detail || 'Start STREAM1 Server and try again.';
+          hintEl.hidden = !data.needsSetup;
+        });
+      }
+
+      retryBtn.onclick = async () => {
+        if (!window.stream1 || !window.stream1.retryConnection) return;
+        retryBtn.disabled = true;
+        retryBtn.textContent = 'Connecting…';
+        try {
+          const result = await window.stream1.retryConnection();
+          if (!result.ok) {
+            titleEl.textContent = result.needsSetup ? 'Finish server setup' : 'Cannot connect';
+            detailEl.textContent = result.error || 'Start STREAM1 Server and try again.';
+            hintEl.hidden = !result.needsSetup;
+          }
+        } finally {
+          retryBtn.disabled = false;
+          retryBtn.textContent = 'Refresh';
+        }
+      };
+    </script>
+  </body>
+</html>

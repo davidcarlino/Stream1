@@ -1,0 +1,246 @@
+================================================================================
+STREAM1 — User guide
+================================================================================
+
+This guide is for church staff and volunteers who use STREAM1 day to day.
+It is not a developer or IT build guide.
+
+STREAM1 helps you create YouTube live streams for services and events. You pick
+a template, set the date and time, and STREAM1 creates the broadcast on YouTube.
+You still stream video from your ATEM switcher as usual — STREAM1 does not
+replace that.
+
+
+--------------------------------------------------------------------------------
+WHAT YOU NEED ON THE COMPUTER
+--------------------------------------------------------------------------------
+
+Two programs work together:
+
+  STREAM1 Server.exe   — runs in the background (system tray near the clock).
+                         Keeps the database and connection to YouTube running.
+                         An administrator usually starts this once and leaves it on.
+
+  STREAM1 App.exe      — the screen you use to log in and create streams.
+                         Open this whenever you need to set up a service.
+
+
+--------------------------------------------------------------------------------
+STARTING STREAM1 (FIRST TIME OR AFTER A REBOOT)
+--------------------------------------------------------------------------------
+
+1. Double-click  STREAM1 Server.exe
+   • A small status window may appear, then it can minimise to the tray.
+   • Look for the STREAM1 icon near the clock (bottom-right on Windows).
+   • Wait until it says the database and web server are running.
+
+2. Double-click  STREAM1 App.exe
+   • The STREAM1 window opens in a few seconds.
+
+If the app says it cannot connect to the server:
+   • Make sure STREAM1 Server is running (check the tray icon).
+   • Click  Refresh  on the connection screen in STREAM1 App.
+   • Right-click the tray icon → Show status.
+   • If the database folder was moved, use Change folder… and point it at the
+     folder that contains stream1-secrets.json.
+   • For a brand-new church install, use  Create new database…  in STREAM1 Server.
+
+To fully stop the server:
+   • Right-click the tray icon → Quit.
+
+
+--------------------------------------------------------------------------------
+LOGGING IN
+--------------------------------------------------------------------------------
+
+1. Open STREAM1 App.
+2. Enter your username and password.
+3. Click Log in.
+
+The first person to use a new installation creates the admin account (password
+must be at least 8 characters). After that, only existing accounts can log in.
+
+If setup is not finished, an admin will see the first-time setup wizard.
+Other users will see a message to wait for an administrator.
+
+
+--------------------------------------------------------------------------------
+FIRST-TIME SETUP (ADMINISTRATORS ONLY)
+--------------------------------------------------------------------------------
+
+Complete this once before volunteers create streams. The wizard has five steps:
+
+  1. Connect YouTube     — Chrome opens; sign in with the church YouTube channel
+                           account and approve access.
+
+  2. Create stream key   — One permanent key for your ATEM. Enter it in ATEM
+                           once; it does not change for every service.
+
+  3. Create playlists    — Sets up Sunday Services and Funerals & Weddings on
+                           YouTube (used when templates add videos to playlists).
+
+  4. Add templates       — Starter templates (Sunday Morning, Evening, Mass, etc.).
+                           You can edit or add more before finishing.
+
+  5. Church name         — Used in titles and descriptions, then click Finish.
+
+After setup, everyone can use New Stream.
+
+
+--------------------------------------------------------------------------------
+CREATING A STREAM (TYPICAL SUNDAY OR EVENT)
+--------------------------------------------------------------------------------
+
+This is the main task for most volunteers.
+
+1. Log in and click  New Stream  at the top (or it opens automatically).
+
+2. Pick a template
+   • Tap the card for the service type (e.g. Sunday Morning, Saturday Night Mass).
+   • Or click  + New template  to define a new type (admins can also use Templates).
+
+3. Fill in the form
+   • Date and time — when the service goes live on YouTube.
+   • Favourite times — if shown, click a chip (e.g. 10:00 AM) instead of typing.
+   • Extra fields — some templates ask for names or details (e.g. funeral name).
+   • Cover image — optional; sets the YouTube thumbnail for this event.
+   • Privacy — Public, Unlisted, or Private (template usually picks the right one).
+
+4. Check the preview
+   • Title and description update as you type.
+
+5. Click  Create Stream
+   • Wait a few seconds. When you see “You’re all set”, the stream is on YouTube.
+
+6. Share the link
+   • A QR code appears — people can scan it with a phone to open YouTube.
+   • Copy link or Open on YouTube to share by email, text, or bulletin.
+
+7. Go live on ATEM
+   • Start streaming from the ATEM as you normally would.
+   • You do not need to open YouTube Studio for a routine service.
+   • STREAM1 is set to auto-start the broadcast when video arrives.
+
+
+--------------------------------------------------------------------------------
+VIEWING PAST AND UPCOMING STREAMS (HISTORY)
+--------------------------------------------------------------------------------
+
+1. Click  History  in the top menu.
+
+2. You see a list of every stream created through STREAM1, with:
+   • Title, date, privacy (Public / Unlisted / Private)
+   • Status — Live, Upcoming, Ended, etc.
+
+3. For each stream you can:
+   • Play        — watch in the page (embedded player).
+   • Share       — opens a window with QR code, link, Copy, Email, or Text.
+   • Privacy     — change who can see it (Public / Unlisted / Private).
+   • Download    — saves the ended recording to your computer (Save As). yt-dlp is bundled inside STREAM1 Server.exe (fetched at build time with `npm run fetch:ytdlp`).
+
+4. Click  Refresh  to update the list from YouTube.
+
+If a stream is “stuck” and will not go live, an admin may use
+Cancel & Recreate  (only when that button appears).
+
+
+--------------------------------------------------------------------------------
+TEMPLATES
+--------------------------------------------------------------------------------
+
+Templates save how each kind of service should look on YouTube (title pattern,
+description, privacy, playlist, default time, cover image).
+
+View and manage templates:
+  1. Click  Templates  in the top menu.
+  2. Click  + New template  or  Edit  on an existing one.
+
+In the template editor you can set:
+  • Name            — what appears on the New Stream picker (e.g. Sunday Morning).
+  • Title pattern   — e.g. {church_name} — Sunday Service — {date}
+  • Description     — text with placeholders like {date}, {time}, {church_name}
+  • Default privacy — public, unlisted, or private
+  • YouTube playlist — optional; new streams can be added to that playlist
+  • Default time & favourite times — up to 3 quick-pick times for this template
+  • Cover image     — optional default thumbnail for this template
+
+Placeholders in patterns:
+  {church_name}  {date}  {time}  plus any custom variables from Settings.
+
+Delete a template only if you no longer need that service type.
+
+
+--------------------------------------------------------------------------------
+SETTINGS
+--------------------------------------------------------------------------------
+
+Click  Settings  in the top menu.
+
+Viewers see only  YouTube connection  — use  Connect YouTube  (or  Reconnect )
+when the banner says YouTube is not connected.
+
+Administrators also see:
+
+Church details
+  • Church name, date format (e.g. June 29, 2026 vs 29/06/2026)
+  • Custom variables — extra placeholders for templates (e.g. location)
+  • Favourite times — global quick-pick buttons on New Stream
+  • Click  Save details  when done.
+
+YouTube connection
+  • Reconnect if the orange/red banner says YouTube connection lost.
+  • Disconnect only if you need to switch to a different Google account.
+
+Permanent stream key
+  • Shows the stream key and server URL for ATEM.
+  • Recreate only if YouTube lost the key — you must enter the new key in ATEM once.
+
+Website embed
+  • Copy the iframe code for your church website (Sunday Services playlist).
+
+Staff logins
+  • Add usernames and passwords for volunteers.
+  • Admins manage templates, settings, and passwords. Viewers can create
+    streams, browse past broadcasts, and use Stream Test.
+
+
+--------------------------------------------------------------------------------
+BANNERS AT THE TOP OF THE APP
+--------------------------------------------------------------------------------
+
+Coloured bar messages mean:
+
+  Red    — action needed (e.g. reconnect YouTube, or recreate stream key in Settings).
+  Orange — warning (e.g. YouTube temporarily unavailable, or check internet).
+
+Follow the button on the banner if one is shown (e.g. Reconnect, Go to Settings).
+
+
+--------------------------------------------------------------------------------
+WHO DOES WHAT (QUICK REFERENCE)
+--------------------------------------------------------------------------------
+
+  Viewer                     Admin
+  -------------------------  ------------------------------------------
+  Log in                     First-time setup, Settings, Templates
+  New Stream                 YouTube reconnect, stream key, user accounts
+  Streams (view, share)      Change privacy, cancel/recreate stuck streams
+  Stream Test                Password resets, database folder (Server GUI)
+
+  Technical / AV               ATEM streaming (same stream key every time)
+
+
+--------------------------------------------------------------------------------
+TIPS
+--------------------------------------------------------------------------------
+
+  • Leave STREAM1 Server running on the streaming PC during services.
+  • Create the YouTube stream in STREAM1 before you go live on ATEM.
+  • Unlisted is common for funerals and weddings — share the link or QR only
+    with people who should watch.
+  • If something fails, note the message on screen and contact your admin.
+    Admins can check the STREAM1 Server status window for errors.
+
+================================================================================
+End of user guide
+================================================================================

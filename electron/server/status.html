@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>STREAM1 Server</title>
+    <link rel="stylesheet" href="status.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <header class="hero">
+        <img class="logo-img" src="icon.png" width="52" height="52" alt="STREAM1" />
+        <div>
+          <h1>STREAM1 Server</h1>
+          <p id="subtitle">Local database and streaming backend</p>
+        </div>
+      </header>
+
+      <div class="status-grid">
+        <section class="card" id="cardDb">
+          <div class="card-head">
+            <span class="dot" id="dotDb"></span>
+            <h2>Database</h2>
+          </div>
+          <p class="value" id="valDb">Starting…</p>
+          <p class="meta" id="metaDb"></p>
+        </section>
+        <section class="card" id="cardHttp">
+          <div class="card-head">
+            <span class="dot" id="dotHttp"></span>
+            <h2>Web server</h2>
+          </div>
+          <p class="value" id="valHttp">Starting…</p>
+          <p class="meta" id="metaHttp"></p>
+        </section>
+        <section class="card" id="cardYt">
+          <div class="card-head">
+            <span class="dot" id="dotYt"></span>
+            <h2>YouTube</h2>
+          </div>
+          <p class="value" id="valYt">Checking…</p>
+          <p class="meta" id="metaYt">OAuth credentials from .env</p>
+        </section>
+      </div>
+
+      <section class="card folder-card">
+        <div class="folder-head">
+          <h2>Database folder</h2>
+          <div class="folder-actions">
+            <button class="btn btn-sm btn-primary" id="btnNewDatabase">Create new database…</button>
+            <button class="btn btn-sm btn-outline" id="btnChangeFolder">Change folder…</button>
+          </div>
+        </div>
+        <p class="path" id="dataPath">—</p>
+        <p class="folder-hint" id="folderHint" hidden>
+          <strong>New database:</strong> pick an empty folder — the first login in STREAM1 App becomes admin.<br />
+          <strong>Existing:</strong> choose the folder that contains <code>stream1-secrets.json</code>.
+        </p>
+      </section>
+
+      <p class="message" id="message"></p>
+      <p class="error" id="error" hidden></p>
+
+      <div class="actions">
+        <button class="btn btn-primary" id="btnOpenApp" disabled>Open STREAM1 App</button>
+        <button class="btn btn-outline" id="btnFolder" disabled>Open folder</button>
+        <button class="btn btn-outline" id="btnRetry" hidden>Try again</button>
+        <button class="btn btn-danger" id="btnQuit">Quit server</button>
+      </div>
+
+      <p class="foot">Closing this window keeps STREAM1 running in the system tray (near the clock). Right-click the tray icon to quit.</p>
+    </div>
+    <script src="status.js"></script>
+  </body>
+</html>

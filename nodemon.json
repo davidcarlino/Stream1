@@ -1,0 +1,15 @@
+{
+  "watch": ["server", "config"],
+  "ext": "js,json",
+  "ignore": [
+    "public/**",
+    "launcher/**",
+    "dist/**",
+    "data/**",
+    "devdata/**",
+    "scripts/**",
+    "server/webAssets.generated.js",
+    "**/*.log"
+  ],
+  "delay": 300
+}

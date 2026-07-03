@@ -1,0 +1,50 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+.env.local
+*.pem
+*.key
+*.pfx
+certs/*.pfx
+
+# Atlas setup output (contains generated DB credentials) — legacy cloud script
+scripts/.atlas-output.json
+
+# Local database secrets (auto-generated, live in the data folder)
+stream1-secrets.json
+**/*-secrets.json
+
+# Local database folder (mongod data + secrets) — never commit
+data/
+**/db/WiredTiger*
+**/db/*.wt
+**/db/journal/
+mongod.log
+
+# Bundled MongoDB binary (large; fetched via scripts/fetch-mongod.ps1)
+vendor/
+
+# Packaged executables (upload via GitHub Releases, not source repo)
+dist/
+
+# Unpacked / CLI build output (not shipped)
+build/
+
+# Generated web-asset bundle (built from public/ at build time)
+server/webAssets.generated.js
+
+# Dependencies
+node_modules/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+Untitled

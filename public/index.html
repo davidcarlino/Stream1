@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0f172a" />
+    <title>STREAM1 - Pro Streaming Management Software</title>
+    <link rel="stylesheet" href="/css/styles.css" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='45' fill='%232563eb'/%3E%3Cpolygon points='40,32 72,50 40,68' fill='white'/%3E%3C/svg%3E" />
+  </head>
+  <body>
+    <div id="shell" class="shell">
+      <div id="shellMain" class="shell-main">
+        <header id="topbar" class="topbar" hidden>
+          <a href="#/" class="brand-logo-link" aria-label="STREAM1 home">
+            <img class="brand-logo" src="/assets/img/logos/stream1-white.png" alt="STREAM1" />
+          </a>
+          <nav id="nav" class="nav"></nav>
+          <div class="topbar-right">
+            <span id="whoami" class="whoami"></span>
+            <button id="logoutBtn" class="btn btn-ghost btn-sm">Log out</button>
+          </div>
+        </header>
+
+        <main id="app" class="app">
+          <div class="loading">Loading…</div>
+        </main>
+      </div>
+
+      <aside id="volumeControlPanel" class="volume-control-panel" aria-label="Volume control" aria-hidden="true">
+        <iframe id="volumeControlFrame" title="Volume control"></iframe>
+      </aside>
+
+      <aside id="streamControlPanel" class="stream-control-panel" aria-label="Stream control tablet" aria-hidden="true">
+        <iframe id="streamControlFrame" title="STREAM control tablet"></iframe>
+      </aside>
+
+      <button type="button" id="volumeControlTab" class="volume-control-tab" hidden aria-expanded="false">
+        <span class="volume-control-tab-label">VOLUME CONTROL</span>
+      </button>
+
+      <button type="button" id="streamControlTab" class="stream-control-tab" hidden aria-expanded="false">
+        <span class="stream-control-tab-label">STREAM CONTROL</span>
+      </button>
+    </div>
+
+    <div id="toast" class="toast" hidden></div>
+    <div id="modal-root"></div>
+
+    <script type="module" src="/js/app.js"></script>
+  </body>
+</html>
