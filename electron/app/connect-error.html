@@ -54,6 +54,13 @@
       }
       #retry:hover { background: #1d4ed8; }
       #retry:disabled { opacity: 0.6; cursor: wait; }
+      #restartServer {
+        background: transparent;
+        color: #f8fafc;
+        border: 1px solid rgba(148, 163, 184, 0.45);
+      }
+      #restartServer:hover { background: rgba(51, 65, 85, 0.65); }
+      #restartServer:disabled { opacity: 0.6; cursor: wait; }
       .hint {
         margin-top: 16px;
         font-size: 0.9rem;
@@ -73,6 +80,7 @@
       <p id="detail">Start STREAM1 Server and try again.</p>
       <p class="hint" id="hint" hidden>Open STREAM1 Server and choose or create a database folder, then click Refresh.</p>
       <div class="actions">
+        <button type="button" id="restartServer">Restart server</button>
         <button type="button" id="retry">Refresh</button>
       </div>
     </div>
@@ -81,6 +89,7 @@
       const detailEl = document.getElementById('detail');
       const hintEl = document.getElementById('hint');
       const retryBtn = document.getElementById('retry');
+      const restartBtn = document.getElementById('restartServer');
 
       if (window.stream1 && window.stream1.onConnectError) {
         window.stream1.onConnectError((data) => {
@@ -93,6 +102,7 @@
       retryBtn.onclick = async () => {
         if (!window.stream1 || !window.stream1.retryConnection) return;
         retryBtn.disabled = true;
+        restartBtn.disabled = true;
         retryBtn.textContent = 'Connecting…';
         try {
           const result = await window.stream1.retryConnection();
@@ -103,7 +113,27 @@
           }
         } finally {
           retryBtn.disabled = false;
+          restartBtn.disabled = false;
           retryBtn.textContent = 'Refresh';
+        }
+      };
+
+      restartBtn.onclick = async () => {
+        if (!window.stream1 || !window.stream1.restartServer) return;
+        retryBtn.disabled = true;
+        restartBtn.disabled = true;
+        restartBtn.textContent = 'Restarting…';
+        try {
+          const result = await window.stream1.restartServer();
+          if (!result.ok) {
+            titleEl.textContent = result.needsSetup ? 'Finish server setup' : 'Cannot connect';
+            detailEl.textContent = result.error || 'Could not restart STREAM1 Server.';
+            hintEl.hidden = !result.needsSetup;
+          }
+        } finally {
+          retryBtn.disabled = false;
+          restartBtn.disabled = false;
+          restartBtn.textContent = 'Restart server';
         }
       };
     </script>

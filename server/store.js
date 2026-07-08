@@ -15,6 +15,7 @@ const YT_AUTH_ID = 'youtube_auth';
 const FB_AUTH_ID = 'facebook_auth';
 const RESTREAM_AUTH_ID = 'restream_auth';
 const RESTREAM_APP_ID = 'restream_app';
+const GMAIL_AUTH_ID = 'gmail_auth';
 
 const DEFAULT_SETTINGS = {
   _id: SETTINGS_ID,
@@ -56,6 +57,13 @@ const DEFAULT_SETTINGS = {
     channelsRefreshedAt: null,
     ingestUrl: 'rtmp://live.restream.io/live',
   },
+  gmail: {
+    email: null,
+    connectedAt: null,
+  },
+  clicksend: {
+    enabled: false,
+  },
 };
 
 /* ------------------------------- Settings -------------------------------- */
@@ -70,6 +78,8 @@ async function getSettings() {
     youtube: { ...DEFAULT_SETTINGS.youtube, ...(doc.youtube || {}) },
     facebook: { ...DEFAULT_SETTINGS.facebook, ...(doc.facebook || {}) },
     restream: { ...DEFAULT_SETTINGS.restream, ...(doc.restream || {}) },
+    gmail: { ...DEFAULT_SETTINGS.gmail, ...(doc.gmail || {}) },
+    clicksend: { ...DEFAULT_SETTINGS.clicksend, ...(doc.clicksend || {}) },
     variables: { ...(doc.variables || {}) },
     timePresets: Array.isArray(doc.timePresets) ? doc.timePresets : DEFAULT_SETTINGS.timePresets,
   };
@@ -83,6 +93,8 @@ async function updateSettings(patch) {
     youtube: { ...current.youtube, ...(patch.youtube || {}) },
     facebook: { ...current.facebook, ...(patch.facebook || {}) },
     restream: { ...current.restream, ...(patch.restream || {}) },
+    gmail: { ...current.gmail, ...(patch.gmail || {}) },
+    clicksend: { ...current.clicksend, ...(patch.clicksend || {}) },
     variables: patch.variables ? { ...patch.variables } : current.variables,
     _id: SETTINGS_ID,
   };
@@ -203,6 +215,39 @@ async function hasRestreamAuth() {
 
 async function clearRestreamAuth() {
   await getDb().collection('meta').deleteOne({ _id: RESTREAM_AUTH_ID });
+}
+
+/* ----------------------------- Gmail OAuth token --------------------------- */
+
+async function saveGmailAuth({ refreshToken, scope, email }) {
+  const doc = {
+    _id: GMAIL_AUTH_ID,
+    scope: scope || null,
+    email: email || null,
+    updatedAt: new Date(),
+  };
+  if (refreshToken) doc.refreshToken = encrypt(refreshToken);
+  await getDb()
+    .collection('meta')
+    .updateOne({ _id: GMAIL_AUTH_ID }, { $set: doc }, { upsert: true });
+}
+
+async function getGmailRefreshToken() {
+  const doc = await getDb().collection('meta').findOne({ _id: GMAIL_AUTH_ID });
+  if (!doc || !doc.refreshToken) return null;
+  try {
+    return decrypt(doc.refreshToken);
+  } catch (err) {
+    return null;
+  }
+}
+
+async function hasGmailAuth() {
+  return Boolean(await getGmailRefreshToken());
+}
+
+async function clearGmailAuth() {
+  await getDb().collection('meta').deleteOne({ _id: GMAIL_AUTH_ID });
 }
 
 /* ----------------------- Restream app credentials ------------------------ */
@@ -449,6 +494,48 @@ async function deleteStreamByBroadcastId(broadcastId) {
   return res.deletedCount > 0;
 }
 
+/* ----------------------------- SMS send logs ------------------------------- */
+
+const SMS_LOG_CAP = 500;
+
+function serializeSmsLog(doc) {
+  if (!doc) return null;
+  const { _id, ...rest } = doc;
+  return { id: _id.toString(), ...rest };
+}
+
+async function insertSmsLog(entry) {
+  const doc = { ...entry, createdAt: new Date() };
+  await getDb().collection('sms_logs').insertOne(doc);
+
+  const count = await getDb().collection('sms_logs').countDocuments();
+  if (count > SMS_LOG_CAP) {
+    const excess = count - SMS_LOG_CAP;
+    const oldest = await getDb()
+      .collection('sms_logs')
+      .find({})
+      .sort({ createdAt: 1 })
+      .limit(excess)
+      .toArray();
+    if (oldest.length) {
+      await getDb()
+        .collection('sms_logs')
+        .deleteMany({ _id: { $in: oldest.map((d) => d._id) } });
+    }
+  }
+}
+
+async function listSmsLogs(limit = 100) {
+  const cap = Math.min(Math.max(parseInt(limit, 10) || 100, 1), 200);
+  const docs = await getDb()
+    .collection('sms_logs')
+    .find({})
+    .sort({ createdAt: -1 })
+    .limit(cap)
+    .toArray();
+  return docs.map(serializeSmsLog);
+}
+
 module.exports = {
   getSettings,
   updateSettings,
@@ -464,6 +551,10 @@ module.exports = {
   getRestreamAuth,
   hasRestreamAuth,
   clearRestreamAuth,
+  saveGmailAuth,
+  getGmailRefreshToken,
+  hasGmailAuth,
+  clearGmailAuth,
   saveRestreamAppCredentials,
   getRestreamAppCredentials,
   clearRestreamAppCredentials,
@@ -493,4 +584,6 @@ module.exports = {
   getStreamById,
   updateStreamById,
   listRestreamPendingStreams,
+  insertSmsLog,
+  listSmsLogs,
 };

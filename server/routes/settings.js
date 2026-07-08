@@ -2,12 +2,14 @@
 
 const express = require('express');
 const rateLimit = require('express-rate-limit');
+const config = require('../config');
 const store = require('../store');
 const youtube = require('../youtube');
 const cache = require('../cache');
 const googleAuth = require('../auth/googleAuth');
 const facebookAuth = require('../auth/facebookAuth');
 const restreamAuth = require('../auth/restreamAuth');
+const gmailAuth = require('../auth/gmailAuth');
 const restream = require('../restream');
 const appAuth = require('../auth/appAuth');
 const { asyncHandler, AppError } = require('../middleware/errors');
@@ -48,6 +50,7 @@ function publicSettings(settings) {
   const yt = settings.youtube || {};
   const fb = settings.facebook || {};
   const rs = settings.restream || {};
+  const cs = settings.clicksend || {};
   return {
     setupComplete: settings.setupComplete,
     churchName: settings.churchName,
@@ -78,6 +81,16 @@ function publicSettings(settings) {
       channelsRefreshedAt: rs.channelsRefreshedAt || null,
       ingestUrl: rs.ingestUrl || 'rtmp://live.restream.io/live',
     },
+    gmail: {
+      connected: false, // filled by caller
+      configured: false, // filled by caller
+      email: (settings.gmail && settings.gmail.email) || null,
+      connectedAt: (settings.gmail && settings.gmail.connectedAt) || null,
+    },
+    clicksend: {
+      configured: false, // filled by caller
+      enabled: Boolean(cs.enabled),
+    },
   };
 }
 
@@ -91,6 +104,9 @@ router.get(
     out.facebook.connected = await store.hasFacebookAuth();
     out.restream.connected = await store.hasRestreamAuth();
     out.restream.configured = await restreamAuth.isConfigured();
+    out.gmail.connected = await store.hasGmailAuth();
+    out.gmail.configured = config.googleConfigured();
+    out.clicksend.configured = config.clickSendConfigured();
     // Client ID is public in OAuth (it appears in the authorize URL) — expose
     // it so the Settings field prefills; the secret is never sent.
     const rsCreds = await restreamAuth.getAppCredentials();
@@ -140,6 +156,15 @@ router.post(
   })
 );
 
+function assertYouTubeStreamKeyAvailable(settings, restreamConnected) {
+  if (settings.restream && settings.restream.enabled && restreamConnected) {
+    throw new AppError(
+      'YouTube permanent stream key is not used while Restream is connected. Use the Restream stream key for ATEM instead.',
+      { status: 409, code: 'restream_mode' }
+    );
+  }
+}
+
 router.post(
   '/youtube/reveal-stream',
   requireAdmin,
@@ -149,6 +174,7 @@ router.post(
     await appAuth.verifyPasswordForUser(req.session.user.id, password);
 
     const settings = await store.getSettings();
+    assertYouTubeStreamKeyAvailable(settings, await store.hasRestreamAuth());
     const stream = streamCredentialsFromSettings(settings);
     if (!stream) {
       throw new AppError('No stream key has been created yet.', { status: 404, code: 'no_stream' });
@@ -164,6 +190,7 @@ router.post(
   requireAdmin,
   asyncHandler(async (req, res) => {
     const settings = await store.getSettings();
+    assertYouTubeStreamKeyAvailable(settings, await store.hasRestreamAuth());
     const title = `${settings.churchName || 'Church'} ATEM Stream`;
     const stream = await youtube.createPersistentStream(title);
     await store.updateSettings({
@@ -237,7 +264,6 @@ router.put(
 );
 
 // Turn Restream mode on/off. ON = ATEM feeds Restream and it fans out to
-// YouTube/Facebook; the app's direct streaming paths are bypassed.
 router.put(
   '/restream/mode',
   requireAdmin,
@@ -264,6 +290,25 @@ router.put(
       await store.updateSettings({ restream: { enabled: false } });
     }
 
+    cache.invalidate();
+    res.json({ ok: true, enabled });
+  })
+);
+
+router.put(
+  '/clicksend/mode',
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const enabled = Boolean((req.body || {}).enabled);
+
+    if (enabled && !config.clickSendConfigured()) {
+      throw new AppError(
+        'Add CLICKSEND_USERNAME and CLICKSEND_API_KEY to the server .env before turning text messaging on.',
+        { status: 409, code: 'clicksend_not_configured' }
+      );
+    }
+
+    await store.updateSettings({ clicksend: { enabled } });
     cache.invalidate();
     res.json({ ok: true, enabled });
   })
@@ -310,6 +355,16 @@ router.post(
     await restreamAuth.disconnect();
     // Without a Restream connection the mode cannot work — turn it off too.
     await store.updateSettings({ restream: { enabled: false } });
+    cache.invalidate();
+    res.json({ ok: true });
+  })
+);
+
+router.post(
+  '/gmail/disconnect',
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    await gmailAuth.disconnect();
     cache.invalidate();
     res.json({ ok: true });
   })

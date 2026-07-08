@@ -10,13 +10,61 @@ const {
   shell,
   ipcMain,
 } = require('electron');
+const { configureElectronProfile } = require('../shared/electronProfile');
+
+(function applyUpdateRunnerArgv() {
+  for (const arg of process.argv) {
+    if (arg.startsWith('--stream1-update=')) {
+      process.env.STREAM1_UPDATE_RUNNER = '1';
+      process.env.STREAM1_UPDATE_META = arg.slice('--stream1-update='.length);
+    } else if (arg.startsWith('--stream1-update-parent=')) {
+      const pid = parseInt(arg.slice('--stream1-update-parent='.length), 10);
+      if (pid > 0) process.env.STREAM1_UPDATE_PARENT_PID = String(pid);
+    }
+  }
+})();
+
+if (process.env.STREAM1_UPDATE_RUNNER === '1') {
+  configureElectronProfile('stream1-updater');
+  require('../shared/updateRunner').startUpdateRunner();
+  return;
+}
+
+configureElectronProfile('stream1-server');
+const fs = require('fs');
+const config = require('../../server/config');
 const bootstrap = require('../../server/bootstrap');
-const { projectRoot, siblingExe } = require('../shared/paths');
+const { projectRoot, resolveAppExe, installDir, rememberInstallDir, portableExecutableDir } = require('../shared/paths');
 const { loadAppIcon, loadTrayIcon } = require('../shared/icon');
-const { scheduleUpdateChecks, checkForUpdates } = require('../shared/updater');
+const { scheduleUpdateChecks, checkForUpdates, getUpdateUiState } = require('../shared/updater');
+const { sleep } = require('../shared/updateApply');
+const { isWindowsAdmin } = require('../shared/winAdmin');
+const { enforceSingleInstance, focusBrowserWindow } = require('../shared/singleInstance');
+const {
+  installProcessHandlers,
+  attachWindowDiagnostics,
+  logDiagnostic,
+  getRecentLogs,
+  clearLogs,
+  LOG_FILE,
+} = require('../shared/diagnosticLog');
 
 const IS_WIN = process.platform === 'win32';
 const START_MINIMIZED = process.env.STREAM1_START_MINIMIZED === '1';
+
+installProcessHandlers('server');
+
+if (IS_WIN) {
+  app.setAppUserModelId('com.stream1.server');
+}
+
+if (
+  !enforceSingleInstance(app, () => {
+    focusBrowserWindow(mainWindow);
+  })
+) {
+  return;
+}
 
 let mainWindow = null;
 let tray = null;
@@ -30,8 +78,8 @@ function sendStatus() {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 620,
-    height: 720,
+    width: 680,
+    height: 780,
     minWidth: 520,
     minHeight: 640,
     title: 'STREAM1 Server',
@@ -48,6 +96,7 @@ function createWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, 'status.html'));
+  attachWindowDiagnostics(mainWindow, 'server');
 
   mainWindow.on('close', (e) => {
     if (!quitting) {
@@ -138,35 +187,52 @@ function createTray() {
 }
 
 function openCompanionApp() {
-  const appExe =
-    siblingExe('STREAM1 App.exe') ||
-    siblingExe('stream1-app.exe');
+  const fs = require('fs');
+  const { spawn } = require('child_process');
+
+  const appExe = resolveAppExe();
+
   if (appExe) {
-    const { spawn } = require('child_process');
-    spawn(appExe, [], { detached: true, stdio: 'ignore', windowsHide: false }).unref();
-    return;
-  }
-  const appMain = path.join(projectRoot(), 'electron', 'app', 'main.js');
-  if (require('fs').existsSync(appMain)) {
-    const { spawn } = require('child_process');
-    let electronPath;
-    try {
-      electronPath = require('electron');
-    } catch (err) {
-      const status = bootstrap.getStatus();
-      if (status.appUrl) shell.openExternal(status.appUrl);
-      return;
-    }
-    spawn(electronPath, [appMain], {
+    rememberInstallDir(path.dirname(appExe));
+    spawn(appExe, [], {
       detached: true,
       stdio: 'ignore',
-      cwd: projectRoot(),
-      env: { ...process.env, STREAM1_ROOT: projectRoot() },
+      cwd: path.dirname(appExe),
+      windowsHide: false,
     }).unref();
     return;
   }
-  const status = bootstrap.getStatus();
-  if (status.appUrl) shell.openExternal(status.appUrl);
+
+  // Dev only — packaged installs must ship STREAM1 App.exe beside the server.
+  if (!app.isPackaged) {
+    const appMain = path.join(projectRoot(), 'electron', 'app', 'main.js');
+    if (fs.existsSync(appMain)) {
+      spawn(process.execPath, [appMain], {
+        detached: true,
+        stdio: 'ignore',
+        cwd: projectRoot(),
+        env: { ...process.env, STREAM1_ROOT: projectRoot(), STREAM1_INSTALL_DIR: installDir() },
+      }).unref();
+      return;
+    }
+  }
+
+  const lookedIn = [
+    portableExecutableDir(),
+    installDir(),
+    path.dirname(process.execPath),
+  ].filter(Boolean);
+  const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+  dialog.showMessageBox(win, {
+    type: 'error',
+    title: 'STREAM1 App not found',
+    message: 'Could not find STREAM1 App.exe.',
+    detail:
+      `Searched:\n${lookedIn.map((d) => `  ${d}`).join('\n')}\n\n` +
+      'Place STREAM1 App.exe in the same folder as STREAM1 Server.exe, then try again.',
+    buttons: ['OK'],
+  });
+  logDiagnostic('server', 'error', 'STREAM1 App.exe not found when opening companion app', lookedIn);
 }
 
 async function pickFolder(defaultPath, { title, message } = {}) {
@@ -330,10 +396,58 @@ async function startServer() {
     await bootstrap.start({
       pickFolder,
       onStatusChange: sendStatus,
+      envDirs: [installDir()],
     });
   } catch (err) {
+    logDiagnostic('server', 'error', 'Server bootstrap failed', err);
     sendStatus();
   }
+}
+
+async function reloadEnvFile() {
+  const status = bootstrap.getStatus();
+  if (!status.dataDir) {
+    throw new Error('No database folder configured.');
+  }
+
+  const envPath = path.join(status.dataDir, '.env');
+  logDiagnostic('server', 'info', 'Reloading .env and restarting server', envPath);
+
+  await bootstrap.reloadEnvAndRestart([installDir()]);
+  return {
+    ok: true,
+    envPath,
+    envExists: fs.existsSync(envPath),
+    streamControlTabletUrl: config.streamControlTabletUrl,
+    volumeControlUrl: config.volumeControlUrl,
+    appBaseUrl: config.appBaseUrl,
+  };
+}
+
+function getEnvDiagnostics() {
+  const status = bootstrap.getStatus();
+  const dataDir = status.dataDir;
+  const envPath = dataDir ? path.join(dataDir, '.env') : null;
+  const install = installDir();
+  const installEnvPath = path.join(install, '.env');
+
+  return {
+    dataDir,
+    envPath,
+    envExists: envPath ? fs.existsSync(envPath) : false,
+    installDir: install,
+    installEnvPath,
+    installEnvExists: fs.existsSync(installEnvPath),
+    streamControlTabletUrl: config.streamControlTabletUrl,
+    volumeControlUrl: config.volumeControlUrl,
+    appBaseUrl: config.appBaseUrl,
+    port: config.port,
+    youtubeConfigured: config.googleConfigured(),
+    facebookConfigured: config.facebookConfigured(),
+    restreamConfigured: Boolean(config.restream.clientId && config.restream.clientSecret),
+    serverPhase: status.phase,
+    runningAsAdmin: isWindowsAdmin(),
+  };
 }
 
 function registerIpc() {
@@ -380,14 +494,49 @@ function registerIpc() {
   });
 
   ipcMain.handle('check-for-updates', () => checkForUpdates({ silent: false }));
-}
 
-if (IS_WIN) {
-  app.setAppUserModelId('com.stream1.server');
+  ipcMain.handle('get-update-ui-state', () => getUpdateUiState());
+
+  ipcMain.handle('get-app-version', () => app.getVersion());
+
+  ipcMain.handle('get-diagnostic-logs', (_event, opts) => getRecentLogs(opts || {}));
+
+  ipcMain.handle('clear-diagnostic-logs', () => clearLogs());
+
+  ipcMain.handle('open-diagnostic-log-file', () => {
+    if (fs.existsSync(LOG_FILE)) shell.openPath(LOG_FILE);
+    else shell.openPath(path.dirname(LOG_FILE));
+  });
+
+  ipcMain.handle('get-env-diagnostics', () => getEnvDiagnostics());
+
+  ipcMain.handle('reload-env-file', async () => {
+    try {
+      const result = await reloadEnvFile();
+      sendStatus();
+      return result;
+    } catch (err) {
+      logDiagnostic('server', 'error', 'Reload .env failed', err);
+      sendStatus();
+      throw err;
+    }
+  });
+
+  ipcMain.handle('open-env-file', () => {
+    const status = bootstrap.getStatus();
+    if (!status.dataDir) return { ok: false };
+    const envPath = path.join(status.dataDir, '.env');
+    if (fs.existsSync(envPath)) shell.openPath(envPath);
+    else shell.openPath(status.dataDir);
+    return { ok: true, path: envPath };
+  });
 }
 
 app.whenReady().then(async () => {
+  const dir = installDir();
   process.env.STREAM1_ROOT = projectRoot();
+  process.env.STREAM1_INSTALL_DIR = dir;
+  rememberInstallDir(dir);
   createWindow();
   createTray();
   registerIpc();
@@ -398,6 +547,10 @@ app.whenReady().then(async () => {
 
 app.on('before-quit', async () => {
   quitting = true;
+  if (process.env.STREAM1_UPDATE_INSTALL === '1') {
+    await Promise.race([bootstrap.shutdown(), sleep(2500)]);
+    return;
+  }
   await bootstrap.shutdown();
 });
 

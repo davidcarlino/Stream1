@@ -68,6 +68,43 @@ export async function confirmDialog(title, message, { danger = false, confirmTex
   });
 }
 
+/** Admin username + password re-check before destructive actions. */
+export function adminConfirmDialog(title, message, { confirmText = 'Confirm', danger = true } = {}) {
+  return modal((close) => {
+    const el = h(`<div>
+      <h2>${esc(title)}</h2>
+      <p class="muted">${esc(message)}</p>
+      <div class="field">
+        <label for="adminConfirmUser">Admin username</label>
+        <input type="text" id="adminConfirmUser" autocomplete="username" />
+      </div>
+      <div class="field">
+        <label for="adminConfirmPass">Admin password</label>
+        <input type="password" id="adminConfirmPass" autocomplete="current-password" />
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-outline" data-cancel>Cancel</button>
+        <button type="button" class="btn ${danger ? 'btn-danger' : ''}" data-ok>${esc(confirmText)}</button>
+      </div>
+    </div>`);
+    const userInput = el.querySelector('#adminConfirmUser');
+    const passInput = el.querySelector('#adminConfirmPass');
+    userInput.focus();
+    el.querySelector('[data-cancel]').onclick = () => close(null);
+    el.querySelector('[data-ok]').onclick = () => {
+      const username = userInput.value.trim();
+      const password = passInput.value;
+      if (!username) return toast('Enter the admin username.', 'err');
+      if (!password) return toast('Enter the admin password.', 'err');
+      close({ username, password });
+    };
+    passInput.onkeydown = (ev) => {
+      if (ev.key === 'Enter') el.querySelector('[data-ok]').click();
+    };
+    return el;
+  });
+}
+
 // Toggle a button into a loading state and back.
 export function busy(btn, on, labelWhenIdle) {
   if (on) {

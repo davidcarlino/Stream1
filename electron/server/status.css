@@ -32,11 +32,141 @@ html, body {
   padding: 28px 24px 20px;
 }
 
+.shell.logs-mode,
+.shell.diagnostics-mode {
+  max-width: 720px;
+}
+
+.tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.tab {
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 600;
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.tab.active {
+  background: rgba(37, 99, 235, 0.2);
+  border-color: rgba(37, 99, 235, 0.45);
+  color: var(--ink);
+}
+
+.logs-card {
+  padding: 16px;
+}
+
+.logs-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.logs-head h2 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.logs-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.log-filter {
+  font: inherit;
+  font-size: 0.82rem;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+}
+
+.logs-path {
+  margin: 0 0 10px;
+  font-size: 0.75rem;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.logs-view {
+  margin: 0;
+  max-height: 420px;
+  overflow: auto;
+  padding: 12px;
+  border-radius: 10px;
+  background: #0b1220;
+  border: 1px solid var(--line);
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 0.72rem;
+  line-height: 1.45;
+  color: #e2e8f0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+}
+
+.logs-view .log-error,
+.logs-view .log-fatal {
+  color: #fca5a5;
+}
+
+.logs-view .log-warn {
+  color: #fcd34d;
+}
+
+.logs-view .log-app {
+  color: #93c5fd;
+}
+
+.logs-view .log-server {
+  color: #86efac;
+}
+
+.logs-empty {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.top-bar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
 .hero {
   display: flex;
   align-items: center;
   gap: 16px;
-  margin-bottom: 24px;
+  min-width: 0;
+}
+
+.version-badge {
+  flex-shrink: 0;
+  margin-top: 4px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+  background: rgba(51, 65, 85, 0.8);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 4px 10px;
+  letter-spacing: 0.02em;
 }
 
 .logo-img {
@@ -228,4 +358,53 @@ html, body {
   text-align: center;
   font-size: 0.78rem;
   color: var(--muted);
+}
+
+.diag-hint {
+  margin: 0 0 16px;
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.diag-hint code {
+  font-size: 0.85em;
+  color: #cbd5e1;
+}
+
+.diag-list {
+  margin: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.diag-list > div {
+  display: grid;
+  gap: 4px;
+}
+
+.diag-list dt {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.diag-list dd {
+  margin: 0;
+  font-size: 0.88rem;
+  word-break: break-all;
+  color: var(--ink);
+}
+
+.diag-status {
+  margin: 14px 0 0;
+  font-size: 0.88rem;
+  color: var(--green);
+}
+
+.diag-status.error {
+  color: #fca5a5;
 }

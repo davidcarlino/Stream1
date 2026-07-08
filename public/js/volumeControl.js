@@ -1,18 +1,17 @@
-/** VOLUME CONTROL side panel — TSC / UCI viewer iframe (via LAN proxy). */
+/** VOLUME CONTROL side panel — direct iframe to TSC / UCI viewer URL. */
 
-import { lanProxyFrameSrc } from './lanProxyFrame.js';
+import { loadControlFrame, unloadControlFrame } from './lanProxyFrame.js';
+
+const FRAME_ID = 'volumeControlFrame';
 
 let open = false;
-let iframeLoaded = false;
+let controlUrl = null;
 
 export function setVolumeControlUrl(url) {
   if (!url || typeof url !== 'string') return;
-  const frame = document.getElementById('volumeControlFrame');
-  if (frame && iframeLoaded) {
-    iframeLoaded = false;
-    frame.setAttribute('src', lanProxyFrameSrc('volume'));
-    iframeLoaded = true;
-  }
+  controlUrl = url;
+  if (open) loadVolumeControlFrame();
+  else unloadVolumeControlFrame();
 }
 
 export function initVolumeControl() {
@@ -34,23 +33,12 @@ export function showVolumeControlTab(visible) {
   if (!visible) closeVolumeControl();
 }
 
-export function closeVolumeControl() {
-  const tab = document.getElementById('volumeControlTab');
-  const panel = document.getElementById('volumeControlPanel');
-  if (!tab || !panel) return;
-
-  open = false;
-  document.body.classList.remove('volume-control-open');
-  panel.setAttribute('aria-hidden', 'true');
-  tab.setAttribute('aria-expanded', 'false');
-  tab.title = 'Open volume control panel';
+function loadVolumeControlFrame() {
+  loadControlFrame(FRAME_ID, controlUrl);
 }
 
-function ensureIframeLoaded() {
-  const frame = document.getElementById('volumeControlFrame');
-  if (!frame || iframeLoaded) return;
-  frame.setAttribute('src', lanProxyFrameSrc('volume'));
-  iframeLoaded = true;
+function unloadVolumeControlFrame() {
+  unloadControlFrame(FRAME_ID);
 }
 
 function openVolumeControl() {
@@ -60,12 +48,25 @@ function openVolumeControl() {
 
   window.dispatchEvent(new Event('stream1-close-stream'));
 
-  ensureIframeLoaded();
+  loadVolumeControlFrame();
   open = true;
   document.body.classList.add('volume-control-open');
   panel.setAttribute('aria-hidden', 'false');
   tab.setAttribute('aria-expanded', 'true');
   tab.title = 'Close volume control panel';
+}
+
+function closeVolumeControl() {
+  const tab = document.getElementById('volumeControlTab');
+  const panel = document.getElementById('volumeControlPanel');
+  if (!tab || !panel) return;
+
+  unloadVolumeControlFrame();
+  open = false;
+  document.body.classList.remove('volume-control-open');
+  panel.setAttribute('aria-hidden', 'true');
+  tab.setAttribute('aria-expanded', 'false');
+  tab.title = 'Open volume control panel';
 }
 
 export function isVolumeControlOpen() {

@@ -9,7 +9,7 @@
 const bcrypt = require('bcryptjs');
 const store = require('../store');
 const { AppError } = require('../middleware/errors');
-const { ROLE_ADMIN, ROLE_VIEWER, normalizeRole, sanitizeRole } = require('../roles');
+const { ROLE_ADMIN, ROLE_VIEWER, normalizeRole, sanitizeRole, isAdminRole } = require('../roles');
 
 const BCRYPT_ROUNDS = 12;
 const USERNAME_RE = /^[a-zA-Z0-9._-]{3,32}$/;
@@ -90,4 +90,21 @@ async function verifyPasswordForUser(userId, password) {
   return true;
 }
 
-module.exports = { createUser, verifyLogin, setPassword, verifyPasswordForUser, hashPassword, validateCredentials };
+/** Verify an admin username/password (e.g. before deleting a stream). */
+async function verifyAdminCredentials(username, password) {
+  const user = await verifyLogin(username, password);
+  if (!isAdminRole(user.role)) {
+    throw new AppError('This action requires an admin account.', { status: 403, code: 'forbidden' });
+  }
+  return user;
+}
+
+module.exports = {
+  createUser,
+  verifyLogin,
+  setPassword,
+  verifyPasswordForUser,
+  verifyAdminCredentials,
+  hashPassword,
+  validateCredentials,
+};

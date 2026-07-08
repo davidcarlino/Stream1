@@ -8,6 +8,7 @@ const cache = require('../cache');
 const googleAuth = require('../auth/googleAuth');
 const facebookAuth = require('../auth/facebookAuth');
 const restreamAuth = require('../auth/restreamAuth');
+const gmailAuth = require('../auth/gmailAuth');
 const { openChrome } = require('../openChrome');
 const { asyncHandler, AppError } = require('../middleware/errors');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
@@ -115,6 +116,39 @@ router.post(
 
 router.get(
   '/restream-oauth-status',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const state = req.query && req.query.state;
+    if (!state || typeof state !== 'string') {
+      throw new AppError('Missing OAuth state.', { status: 400, code: 'missing_state' });
+    }
+    const pending = await store.getOAuthPending(state);
+    if (!pending) {
+      return res.json({ status: 'expired' });
+    }
+    res.json({
+      status: pending.status || 'pending',
+      channelTitle: pending.channelTitle || null,
+      returnTo: pending.returnTo || 'settings',
+    });
+  })
+);
+
+// Kick off Gmail OAuth for sending stream links by email.
+router.post(
+  '/connect-gmail',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const returnTo = (req.body && req.body.returnTo) || 'settings';
+    const { url, state } = gmailAuth.buildAuthUrl();
+    await store.saveOAuthPending({ state, returnTo });
+    const { opened, usedChrome } = openChrome(url);
+    res.json({ state, url, opened, usedChrome });
+  })
+);
+
+router.get(
+  '/gmail-oauth-status',
   requireAuth,
   asyncHandler(async (req, res) => {
     const state = req.query && req.query.state;
@@ -294,6 +328,47 @@ async function restreamOauthCallback(req, res) {
   }
 }
 
+async function gmailOauthCallback(req, res) {
+  const { code, state, error } = req.query;
+  const stateStr = state ? String(state) : '';
+  const pending = stateStr ? await store.getOAuthPending(stateStr) : null;
+
+  const finish = (status, title, message, ok, channelTitle) => {
+    if (stateStr && pending) {
+      store.setOAuthPendingResult(stateStr, { status, channelTitle }).catch(() => {});
+    }
+    res.set('Content-Type', 'text/html; charset=utf-8');
+    res.send(oauthResultPage(title, message, ok));
+  };
+
+  if (error) {
+    return finish('denied', 'Connection cancelled', 'You declined access or closed the sign-in window. Return to STREAM1 and try again.', false);
+  }
+  if (!stateStr || !pending || pending.status !== 'pending') {
+    return finish('invalid', 'Link expired', 'This sign-in link is no longer valid. Return to STREAM1 and click Connect again.', false);
+  }
+  if (!code) {
+    return finish('invalid', 'Sign-in incomplete', 'No authorization code was received. Return to STREAM1 and try again.', false);
+  }
+
+  try {
+    const result = await gmailAuth.handleCallback(String(code));
+    cache.invalidate('health');
+    const name = result.email ? ` as ${result.email}` : '';
+    return finish(
+      'connected',
+      'Gmail connected',
+      `Your church Gmail account is now linked${name}. You can email stream links from the Streams page.`,
+      true,
+      result.email
+    );
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[gmail oauth] callback failed:', err && err.message);
+    return finish('failed', 'Connection failed', (err && err.message) || 'Something went wrong during sign-in. Return to STREAM1 and try again.', false);
+  }
+}
+
 // Create (or reuse) the single persistent liveStream ATEM connects to.
 router.post(
   '/create-stream',
@@ -401,4 +476,4 @@ router.post(
   })
 );
 
-module.exports = { router, oauthCallback, facebookOauthCallback, restreamOauthCallback };
+module.exports = { router, oauthCallback, facebookOauthCallback, restreamOauthCallback, gmailOauthCallback };

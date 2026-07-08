@@ -15,6 +15,7 @@ const cache = require('../cache');
 const videoDownload = require('../videoDownload');
 const { asyncHandler, AppError } = require('../middleware/errors');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
+const appAuth = require('../auth/appAuth');
 
 const router = express.Router();
 const PRIVACY = ['public', 'unlisted', 'private'];
@@ -26,6 +27,12 @@ function watchUrl(videoId) {
 }
 function studioUrl(videoId) {
   return `https://studio.youtube.com/video/${videoId}/edit`;
+}
+
+function streamThumbnailPath(broadcastId) {
+  const id = String(broadcastId || '').trim();
+  if (!id || id.startsWith('restream-pending-')) return null;
+  return `/api/streams/${encodeURIComponent(id)}/thumbnail`;
 }
 
 const LIVE_BROADCAST_STATES = new Set(['live', 'liveStarting', 'testStarting', 'testing']);
@@ -146,6 +153,7 @@ async function createViaRestream(req, res, settings, body) {
     templateName: template.name,
     emailSubjectPattern: template.emailSubjectPattern || null,
     emailBodyPattern: template.emailBodyPattern || null,
+    smsBodyPattern: template.smsBodyPattern || null,
     warning: warnings.length ? warnings.join(' ') : null,
   });
 }
@@ -262,6 +270,7 @@ router.post(
       templateName: template.name,
       emailSubjectPattern: template.emailSubjectPattern || null,
       emailBodyPattern: template.emailBodyPattern || null,
+      smsBodyPattern: template.smsBodyPattern || null,
       warning: warnings.length ? warnings.join(' ') : null,
     });
   })
@@ -271,20 +280,27 @@ router.post(
 
 const HISTORY_TTL_MS = 60 * 1000;
 
-function buildPreviewBroadcast(broadcasts, ingestActive) {
+function buildPreviewBroadcast(broadcasts, signalActive, activeBroadcastId) {
   const candidates = broadcasts.filter((b) =>
     PREVIEW_BROADCAST_STATES.has((b.status && b.status.lifeCycleStatus) || '')
   );
   if (!candidates.length) return null;
 
-  const pick =
-    candidates.find((b) => b.status && b.status.lifeCycleStatus === 'live') ||
-    candidates.find((b) => LIVE_BROADCAST_STATES.has((b.status && b.status.lifeCycleStatus) || '')) ||
-    candidates[0];
+  let pick = null;
+  if (activeBroadcastId) {
+    pick = candidates.find((b) => b.id === activeBroadcastId);
+  }
+  if (!pick) {
+    pick =
+      candidates.find((b) => b.status && b.status.lifeCycleStatus === 'live') ||
+      candidates.find((b) => LIVE_BROADCAST_STATES.has((b.status && b.status.lifeCycleStatus) || '')) ||
+      candidates[0];
+  }
 
   const lifeCycleStatus = (pick.status && pick.status.lifeCycleStatus) || '';
   const onAir = lifeCycleStatus === 'live';
-  if (!onAir && !ingestActive) return null;
+  // Always show embed when YouTube reports live; otherwise wait for encoder/Restream signal.
+  if (!onAir && !signalActive) return null;
 
   const st = describeStatus(lifeCycleStatus);
   return {
@@ -313,8 +329,7 @@ async function buildHistory() {
     const rec = localByBroadcast.get(b.id);
     if (rec) localByBroadcast.delete(b.id);
     const tpl = rec && rec.templateId ? tplById.get(rec.templateId) : null;
-    const thumbs = (b.snippet && b.snippet.thumbnails) || {};
-    const thumb = (thumbs.medium || thumbs.default || {}).url || null;
+    const thumb = streamThumbnailPath(b.id);
     return {
       broadcastId: b.id,
       title: b.snippet && b.snippet.title,
@@ -333,7 +348,9 @@ async function buildHistory() {
       templateName: rec ? rec.templateName : null,
       emailSubjectPattern: tpl ? tpl.emailSubjectPattern : null,
       emailBodyPattern: tpl ? tpl.emailBodyPattern : null,
+      smsBodyPattern: tpl ? tpl.smsBodyPattern : null,
       createdBy: rec ? rec.createdBy : null,
+      hidden: Boolean(rec && rec.hidden),
     };
   });
 
@@ -350,7 +367,7 @@ async function buildHistory() {
       statusLabel: pending ? 'Ready — start ATEM' : 'Ended',
       lifeCycleStatus: pending ? 'ready' : undefined,
       stuck: false,
-      thumbnail: null,
+      thumbnail: pending ? null : streamThumbnailPath(rec.broadcastId),
       watchUrl: pending ? null : watchUrl(rec.broadcastId),
       studioUrl: pending ? null : studioUrl(rec.broadcastId),
       videoId: pending ? null : rec.broadcastId,
@@ -358,10 +375,12 @@ async function buildHistory() {
       templateName: rec.templateName,
       emailSubjectPattern: tpl ? tpl.emailSubjectPattern : null,
       emailBodyPattern: tpl ? tpl.emailBodyPattern : null,
+      smsBodyPattern: tpl ? tpl.smsBodyPattern : null,
       createdBy: rec.createdBy,
       localOnly: true,
       viaRestream: Boolean(rec.viaRestream),
       restreamPending: pending,
+      hidden: Boolean(rec.hidden),
     });
   }
 
@@ -394,13 +413,58 @@ router.get(
       }
     }
 
+    const activeBroadcastId = (settings.youtube && settings.youtube.activeBroadcastId) || null;
+
+    let restreamLive = null;
+    let restreamPreview = null;
+    let broadcasts = [];
+    if (restreamMode && (await store.hasRestreamAuth())) {
+      try {
+        if (await store.hasYouTubeAuth()) {
+          broadcasts = await youtube.listBroadcasts(25);
+        }
+        restreamPreview = await restream.resolveLivePreview(broadcasts);
+        restreamLive = restreamPreview ? true : false;
+      } catch (err) {
+        restreamLive = null;
+        restreamPreview = null;
+      }
+    }
+
     let live = null;
     let recent = null;
     let preview = null;
+
+    if (restreamPreview && restreamPreview.youtubeVideoId) {
+      const st = describeStatus(restreamPreview.lifeCycleStatus);
+      preview = {
+        broadcastId: restreamPreview.youtubeVideoId,
+        title: restreamPreview.title,
+        lifeCycleStatus: restreamPreview.lifeCycleStatus || 'live',
+        statusLabel: st.label === 'Upcoming' && restreamLive ? 'Live' : st.label,
+        watchUrl: restreamPreview.watchUrl || watchUrl(restreamPreview.youtubeVideoId),
+        viaRestream: true,
+      };
+    }
+
     if (await store.hasYouTubeAuth()) {
-      const broadcasts = await youtube.listBroadcasts(25);
+      if (!broadcasts.length) broadcasts = await youtube.listBroadcasts(25);
       const ingestActive = ingest && ingest.streamStatus === 'active';
-      preview = buildPreviewBroadcast(broadcasts, ingestActive);
+      const signalActive = ingestActive || restreamLive === true;
+      const ytPreview = buildPreviewBroadcast(broadcasts, signalActive, activeBroadcastId);
+
+      if (!preview && ytPreview) {
+        preview = ytPreview;
+      } else if (restreamLive && ytPreview && preview && preview.lifeCycleStatus !== 'live') {
+        // Restream is sending but YouTube lifecycle still settling — keep Restream id, refresh meta.
+        preview = {
+          ...preview,
+          statusLabel: preview.statusLabel || ytPreview.statusLabel || 'Live',
+          scheduledStartTime: preview.scheduledStartTime || ytPreview.scheduledStartTime,
+          actualStartTime: preview.actualStartTime || ytPreview.actualStartTime,
+          privacy: preview.privacy || ytPreview.privacy,
+        };
+      }
       if (broadcasts.length) {
         const b0 = broadcasts[0];
         const st0 = describeStatus(b0.status && b0.status.lifeCycleStatus);
@@ -438,8 +502,6 @@ router.get(
       if (local && local.facebookPermalink) preview.facebookPermalink = local.facebookPermalink;
     }
 
-    const activeBroadcastId = (settings.youtube && settings.youtube.activeBroadcastId) || null;
-
     // Facebook simulcast status + recent console log for the Stream Test page.
     const fb = settings.facebook || {};
     const relay = facebookRelay.status();
@@ -457,16 +519,8 @@ router.get(
       enabled: restreamMode,
       connected: restreamMode ? await store.hasRestreamAuth() : false,
       pendingCount: restreamMode ? (await store.listRestreamPendingStreams()).length : 0,
-      live: null,
+      live: restreamMode ? restreamLive : null,
     };
-    if (restreamMode && restreamStatus.connected) {
-      try {
-        const status = await restream.getStreamingStatus();
-        restreamStatus.live = status.live;
-      } catch (err) {
-        restreamStatus.live = null; // unknown — don't block the monitor
-      }
-    }
 
     res.json({
       ingest,
@@ -474,6 +528,7 @@ router.get(
       recent,
       preview,
       activeBroadcastId,
+      restreamPreview,
       facebook: facebookStatus,
       restream: restreamStatus,
       simulcastLog: simulcastLog.recent(50),
@@ -490,11 +545,128 @@ router.get(
     const activeBroadcastId = (settings.youtube && settings.youtube.activeBroadcastId) || null;
     if (!force) {
       const cached = cache.get('history');
-      if (cached) return res.json({ streams: cached, activeBroadcastId, cached: true });
+      if (cached) {
+        return res.json({
+          streams: cached.filter((row) => !row.hidden),
+          activeBroadcastId,
+          cached: true,
+        });
+      }
     }
-    const rows = await buildHistory();
+    const rows = (await buildHistory()).filter((row) => !row.hidden);
     cache.set('history', rows, HISTORY_TTL_MS);
     res.json({ streams: rows, activeBroadcastId, cached: false });
+  })
+);
+
+router.get(
+  '/hidden',
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const rows = (await buildHistory()).filter((row) => row.hidden);
+    res.json({ streams: rows });
+  })
+);
+
+/** Same-origin YouTube thumbnail (avoids CSP / CDN host issues in the browser). */
+router.get(
+  '/:id/thumbnail',
+  asyncHandler(async (req, res) => {
+    const id = String(req.params.id || '').trim();
+    if (!id || id.startsWith('restream-pending-')) {
+      throw new AppError('No thumbnail for this stream.', { status: 404, code: 'not_found' });
+    }
+
+    const tryFetch = async (url) => {
+      const imgRes = await fetch(url, { redirect: 'follow' });
+      if (!imgRes.ok) return null;
+      const type = imgRes.headers.get('content-type') || 'image/jpeg';
+      const buf = Buffer.from(await imgRes.arrayBuffer());
+      if (buf.length < 200) return null;
+      return { type, buf };
+    };
+
+    const candidates = [];
+    if (await store.hasYouTubeAuth()) {
+      try {
+        const map = await youtube.listVideoThumbnails([id]);
+        const apiUrl = map.get(id);
+        if (apiUrl) candidates.push(apiUrl);
+      } catch (err) {
+        /* fall through to CDN defaults */
+      }
+    }
+    candidates.push(
+      youtube.defaultThumbnailUrl(id),
+      `https://i.ytimg.com/vi/${encodeURIComponent(id)}/hqdefault.jpg`
+    );
+
+    for (const url of candidates) {
+      if (!url) continue;
+      // eslint-disable-next-line no-await-in-loop
+      const img = await tryFetch(url);
+      if (img) {
+        res.set('Content-Type', img.type);
+        res.set('Cache-Control', 'private, max-age=300');
+        return res.send(img.buf);
+      }
+    }
+
+    throw new AppError('Thumbnail not available.', { status: 404, code: 'not_found' });
+  })
+);
+
+async function ensureStreamRecordForHide(broadcastId) {
+  const existing = await store.getStreamByBroadcastId(broadcastId);
+  if (existing) return existing;
+
+  let title = 'Untitled';
+  let privacy = 'unlisted';
+  let scheduledStartTime = null;
+  if (await store.hasYouTubeAuth()) {
+    try {
+      const broadcast = await youtube.getBroadcast(broadcastId);
+      if (broadcast) {
+        title = (broadcast.snippet && broadcast.snippet.title) || title;
+        privacy = (broadcast.status && broadcast.status.privacyStatus) || privacy;
+        scheduledStartTime = broadcast.snippet && broadcast.snippet.scheduledStartTime;
+      }
+    } catch {
+      /* local stub is enough */
+    }
+  }
+
+  return store.insertStream({
+    broadcastId,
+    title,
+    privacy,
+    scheduledStartTime,
+    hidden: true,
+    hiddenAt: new Date(),
+  });
+}
+
+router.put(
+  '/:id/hidden',
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const hidden = Boolean((req.body || {}).hidden);
+    const broadcastId = req.params.id;
+    let rec = await store.getStreamByBroadcastId(broadcastId);
+
+    if (!rec) {
+      if (!hidden) {
+        return res.json({ ok: true, hidden: false });
+      }
+      rec = await ensureStreamRecordForHide(broadcastId);
+    } else if (hidden) {
+      await store.updateStreamByBroadcastId(broadcastId, { hidden: true, hiddenAt: new Date() });
+    } else {
+      await store.updateStreamById(rec.id, { hidden: false }, ['hiddenAt']);
+    }
+
+    cache.invalidate('history');
+    res.json({ ok: true, hidden });
   })
 );
 
@@ -717,6 +889,9 @@ router.delete(
   '/:id',
   requireAdmin,
   asyncHandler(async (req, res) => {
+    const body = req.body || {};
+    await appAuth.verifyAdminCredentials(body.username, body.password);
+
     const recreate = req.query.recreate === '1';
     const prior = await store.getStreamByBroadcastId(req.params.id);
 

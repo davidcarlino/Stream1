@@ -1,7 +1,6 @@
 import { api } from '../api.js';
-import { h, esc, toast, busy } from '../ui.js';
+import { h, esc } from '../ui.js';
 import { youtubeEmbedIframeHtml } from '../youtubeEmbed.js';
-import { canStartStream, canStopStream, wireStreamControl } from '../streamControls.js';
 
 let pollId = null;
 
@@ -27,8 +26,12 @@ function ingestLabel(status) {
 
 const PREVIEWABLE_STATES = new Set(['live', 'liveStarting', 'testStarting', 'testing', 'ready']);
 
-function hasEmbedPreview(preview) {
-  return preview && preview.broadcastId && PREVIEWABLE_STATES.has(preview.lifeCycleStatus);
+function hasEmbedPreview(preview, data) {
+  if (!preview || !preview.broadcastId) return false;
+  if (PREVIEWABLE_STATES.has(preview.lifeCycleStatus)) return true;
+  if (preview.viaRestream && data && data.restream && data.restream.live) return true;
+  if (data && data.restream && data.restream.live) return true;
+  return false;
 }
 
 function fmtLogTime(iso) {
@@ -66,19 +69,31 @@ function facebookLiveLink(data, preview) {
   return (preview && preview.facebookPermalink) || fb.activeLiveVideoUrl || null;
 }
 
+function pickEmbedPreview(data) {
+  const rs = data.restreamPreview;
+  if (rs && rs.youtubeVideoId && data.restream && data.restream.live) {
+    return {
+      broadcastId: rs.youtubeVideoId,
+      title: rs.title,
+      lifeCycleStatus: rs.lifeCycleStatus || 'live',
+      statusLabel: 'Live',
+      watchUrl: rs.watchUrl || `https://www.youtube.com/watch?v=${rs.youtubeVideoId}`,
+      viaRestream: true,
+    };
+  }
+  if (hasEmbedPreview(data.preview, data)) return data.preview;
+  if (hasEmbedPreview(data.live, data)) return data.live;
+  return null;
+}
+
 function paintMonitor(node, data) {
   const ingest = data.ingest || {};
   const live = data.live;
-  const preview = data.preview || live;
-  const broadcast = live || preview;
+  const preview = pickEmbedPreview(data);
+  const broadcast = live || preview || data.preview;
   const ingestInfo = ingestLabel(ingest.streamStatus);
-  const previewRow = preview
-    ? { lifeCycleStatus: preview.lifeCycleStatus, statusLabel: preview.statusLabel, localOnly: false }
-    : null;
-  const showStart = previewRow && canStartStream(previewRow);
-  const showStop = previewRow && canStopStream(previewRow);
 
-  const previewSection = hasEmbedPreview(preview)
+  const previewSection = hasEmbedPreview(preview, data)
     ? `<div class="card section stream-test-preview">
         <div class="stream-test-head">
           <h2>Stream preview</h2>
@@ -99,8 +114,6 @@ function paintMonitor(node, data) {
           </p>
         </div>
         <div class="btn-row mt stream-test-controls">
-          ${showStart ? '<button class="btn btn-sm btn-go-live" data-act="go-live" data-label="Start stream">Start stream</button>' : ''}
-          ${showStop ? '<button class="btn btn-sm btn-danger" data-act="stop" data-label="Stop stream">Stop stream</button>' : ''}
           <a class="btn btn-outline btn-sm" href="${esc(preview.watchUrl)}" target="_blank" rel="noopener">View live in YouTube</a>
           ${facebookLiveLink(data, preview)
             ? `<a class="btn btn-outline btn-sm" href="${esc(facebookLiveLink(data, preview))}" target="_blank" rel="noopener">View live in Facebook</a>`
@@ -109,15 +122,14 @@ function paintMonitor(node, data) {
       </div>`
     : `<div class="card section center stream-test-preview-empty">
         <h2>No preview available</h2>
-        <p class="muted">${ingest.streamStatus === 'active'
+        <p class="muted">${data.restream && data.restream.live && data.restreamPreview && !data.restreamPreview.youtubeVideoId
+          ? 'Restream is live — waiting for the YouTube watch link (usually within a minute). Refresh to check again.'
+          : ingest.streamStatus === 'active' || (data.restream && data.restream.live)
           ? 'Streamer is sending — pick a broadcast below or create one from New Stream.'
           : 'When the Streamer is sending and a broadcast is active, the live preview will appear here.'}</p>
-        ${data.recent && !hasEmbedPreview(preview)
+        ${data.recent && !hasEmbedPreview(preview, data)
           ? `<div class="stream-test-recent mt">
               <p><strong>Latest broadcast:</strong> ${esc(data.recent.title || '(untitled)')} — ${esc(data.recent.statusLabel || '')}</p>
-              ${canStartStream({ lifeCycleStatus: data.recent.lifeCycleStatus, statusLabel: data.recent.statusLabel })
-                ? `<button class="btn btn-sm btn-go-live mt" data-act="go-live" data-label="Start stream" data-broadcast-id="${esc(data.recent.broadcastId)}">Start stream to this event</button>`
-                : ''}
             </div>`
           : ''}
       </div>`;
@@ -181,17 +193,6 @@ function paintMonitor(node, data) {
     </div>
     ${previewSection}
     ${simulcastLogHtml(data)}`;
-
-  wireMonitorControls(node, preview, data.recent, () => refresh(node));
-}
-
-function wireMonitorControls(node, preview, recent, onDone) {
-  node.querySelectorAll('[data-act="go-live"], [data-act="stop"]').forEach((btn) => {
-    const broadcastId = btn.getAttribute('data-broadcast-id') || (preview && preview.broadcastId);
-    const title = (preview && preview.title) || (recent && recent.title) || '';
-    if (!broadcastId) return;
-    wireStreamControl(btn, { broadcastId, title, onDone, busyFn: busy });
-  });
 }
 
 function fmtWhen(iso) {

@@ -1,19 +1,28 @@
 'use strict';
 
-const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { spawn } = require('child_process');
-const { net, app, dialog, BrowserWindow } = require('electron');
+const crypto = require('crypto');
+const { app, dialog, BrowserWindow, net } = require('electron');
 const { getManifestUrl, updatesEnabled } = require('./updateConfig');
+const { installDir } = require('./paths');
+const { sleep } = require('./updateApply');
+const { launchStream1Update } = require('./updateLauncher');
+const {
+  createUpdateProgressWindow,
+  sendUpdateProgress,
+  closeUpdateProgressWindow,
+} = require('./updateProgressWindow');
 
-const CHECK_DELAY_MS = 8000;
-const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const INITIAL_CHECK_DELAY_MS = 8000;
+const SERVER_CHECK_INTERVAL_MS = 2 * 60 * 60 * 1000;
+const SERVER_SNOOZE_MS = 4 * 60 * 60 * 1000;
 const UPDATE_DIR_NAME = 'stream1-update';
 
 let checkTimer = null;
 let checking = false;
-let promptedVersion = null;
+/** @type {Map<string, number>} version → snooze expiry (ms since epoch) */
+const snoozedUntil = new Map();
 
 function parseVersion(value) {
   return String(value || '')
@@ -34,8 +43,18 @@ function isNewerVersion(candidate, current) {
   return false;
 }
 
-function installDir() {
-  return path.dirname(process.execPath);
+function isSnoozed(version) {
+  const until = snoozedUntil.get(version);
+  if (!until) return false;
+  if (Date.now() >= until) {
+    snoozedUntil.delete(version);
+    return false;
+  }
+  return true;
+}
+
+function snoozeVersion(version) {
+  snoozedUntil.set(version, Date.now() + SERVER_SNOOZE_MS);
 }
 
 function currentVersion() {
@@ -48,7 +67,16 @@ function currentVersion() {
 
 function parentWindow() {
   const wins = BrowserWindow.getAllWindows();
-  return wins.find((win) => !win.isDestroyed()) || null;
+  return wins.find((win) => !win.isDestroyed() && !win.getTitle().includes('Update')) || null;
+}
+
+function revealServerWindow() {
+  const win = parentWindow();
+  if (win && !win.isVisible()) {
+    win.show();
+    win.focus();
+  }
+  return win;
 }
 
 function fetchJson(url) {
@@ -85,9 +113,20 @@ function downloadFile(url, destPath, onProgress) {
     const file = fs.createWriteStream(destPath);
 
     request.on('response', (response) => {
+      if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+        file.close(() => {
+          fs.unlink(destPath, () => {
+            downloadFile(response.headers.location, destPath, onProgress).then(resolve).catch(reject);
+          });
+        });
+        return;
+      }
+
       if (response.statusCode >= 400) {
         file.close(() => {
-          fs.unlink(destPath, () => reject(new Error(`Download failed (${response.statusCode}).`)));
+          fs.unlink(destPath, () =>
+            reject(new Error(`Download failed (${response.statusCode}) for ${url}`))
+          );
         });
         return;
       }
@@ -176,7 +215,7 @@ async function fetchManifest() {
   return normalizeManifest(manifest);
 }
 
-async function downloadReleaseFiles(manifest, onProgress) {
+async function downloadReleaseFiles(manifest) {
   const targetDir = path.join(app.getPath('temp'), UPDATE_DIR_NAME, manifest.version);
   fs.mkdirSync(targetDir, { recursive: true });
 
@@ -187,9 +226,12 @@ async function downloadReleaseFiles(manifest, onProgress) {
   for (const [key, entry] of entries) {
     const destPath = path.join(targetDir, entry.name);
     await downloadFile(entry.url, destPath, (percent) => {
-      if (!onProgress) return;
       const overall = Math.round(((completed + percent / 100) / entries.length) * 100);
-      onProgress(overall, entry.name);
+      sendUpdateProgress({
+        phase: 'download',
+        percent: overall,
+        label: `Downloading ${entry.name}…`,
+      });
     });
 
     const hash = await sha256File(destPath);
@@ -199,7 +241,11 @@ async function downloadReleaseFiles(manifest, onProgress) {
 
     downloaded[key] = destPath;
     completed += 1;
-    if (onProgress) onProgress(Math.round((completed / entries.length) * 100), entry.name);
+    sendUpdateProgress({
+      phase: 'download',
+      percent: Math.round((completed / entries.length) * 100),
+      label: `${entry.name} verified`,
+    });
   }
 
   const metaPath = path.join(targetDir, 'pending-update.json');
@@ -210,9 +256,9 @@ async function downloadReleaseFiles(manifest, onProgress) {
         version: manifest.version,
         installDir: installDir(),
         files: Object.fromEntries(
-          Object.entries(downloaded).map(([key, filePath]) => [
-            key,
-            { source: filePath, name: manifest.files[key].name },
+          Object.entries(downloaded).map(([fileKey, filePath]) => [
+            fileKey,
+            { source: filePath, name: manifest.files[fileKey].name },
           ])
         ),
         createdAt: new Date().toISOString(),
@@ -225,89 +271,96 @@ async function downloadReleaseFiles(manifest, onProgress) {
   return { targetDir, downloaded, metaPath };
 }
 
-function createApplyScript(metaPath) {
-  const scriptPath = path.join(app.getPath('temp'), UPDATE_DIR_NAME, 'apply-stream1-update.cmd');
-  const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
-  const install = String(meta.installDir || installDir()).replace(/"/g, '""');
-  const lines = [
-    '@echo off',
-    'timeout /t 2 /nobreak >nul',
-    `set "INSTALL_DIR=${install}"`,
-    ':waitloop',
-    'tasklist /FI "IMAGENAME eq STREAM1 Server.exe" 2>nul | find /I "STREAM1 Server.exe" >nul && (timeout /t 1 /nobreak >nul & goto waitloop)',
-    'tasklist /FI "IMAGENAME eq STREAM1 App.exe" 2>nul | find /I "STREAM1 App.exe" >nul && (timeout /t 1 /nobreak >nul & goto waitloop)',
-  ];
+async function launchInstallRunner(metaPath) {
+  sendUpdateProgress({
+    phase: 'install',
+    percent: 10,
+    label: 'Starting STREAM1 Update…',
+  });
 
-  for (const entry of Object.values(meta.files || {})) {
-    const source = String(entry.source).replace(/"/g, '""');
-    const name = String(entry.name).replace(/"/g, '""');
-    lines.push(`copy /Y "${source}" "%INSTALL_DIR%\\${name}" >nul`);
+  const launched = await launchStream1Update(metaPath, process.pid);
+  if (!launched.ok) {
+    throw new Error(launched.error || 'Could not start the update installer.');
   }
 
-  lines.push('start "" "%INSTALL_DIR%\\STREAM1 Server.exe"', 'exit /b 0');
+  sendUpdateProgress({
+    phase: 'install',
+    percent: 25,
+    label:
+      launched.mode === 'updater'
+        ? 'STREAM1 Update is installing — Server will close automatically…'
+        : 'Installing — STREAM1 will close and restart automatically…',
+  });
 
-  fs.writeFileSync(scriptPath, lines.join('\r\n'), 'utf8');
-  return scriptPath;
+  await sleep(2000);
+  closeUpdateProgressWindow();
+  process.env.STREAM1_UPDATE_INSTALL = '1';
+  await sleep(400);
+  app.exit(0);
 }
 
-async function promptForUpdate(manifest) {
-  if (promptedVersion === manifest.version) return;
-  promptedVersion = manifest.version;
+async function runUpdateFlow(manifest) {
+  createUpdateProgressWindow();
+  sendUpdateProgress({
+    phase: 'download',
+    percent: 0,
+    label: `Starting download of v${manifest.version}…`,
+  });
 
-  const win = parentWindow();
+  const { metaPath } = await downloadReleaseFiles(manifest);
+
+  sendUpdateProgress({
+    phase: 'download',
+    percent: 100,
+    label: 'Download complete — ready to install',
+  });
+  await sleep(600);
+
+  await launchInstallRunner(metaPath);
+}
+
+async function promptForUpdate(manifest, { ignoreSnooze = false } = {}) {
+  if (!ignoreSnooze && isSnoozed(manifest.version)) return;
+
+  const win = revealServerWindow();
   const notes = manifest.notes ? `\n\n${manifest.notes}` : '';
   const result = await dialog.showMessageBox(win, {
     type: 'info',
     title: 'STREAM1 update available',
     message: `Version ${manifest.version} is available.`,
     detail:
-      `You are on ${currentVersion()}. Download and install the update now? ` +
-      `STREAM1 will close briefly while the new files are copied.${notes}`,
-    buttons: ['Download update', 'Later'],
+      `You are on v${currentVersion()}. Download and install now? ` +
+      `Windows will ask for administrator permission to force-close STREAM1 App and Server, ` +
+      `replace the application files, then restart STREAM1 Server. ` +
+      `If you choose Later, you will be reminded again in about 4 hours.${notes}`,
+    buttons: ['Update now', 'Later'],
     defaultId: 0,
     cancelId: 1,
     noLink: true,
   });
 
-  if (result.response !== 0) return;
+  if (result.response !== 0) {
+    snoozeVersion(manifest.version);
+    return;
+  }
+
+  snoozedUntil.delete(manifest.version);
 
   try {
-    const { metaPath } = await downloadReleaseFiles(manifest);
-    const scriptPath = createApplyScript(metaPath);
-
-    const ready = await dialog.showMessageBox(win, {
-      type: 'info',
-      title: 'Update ready',
-      message: `Version ${manifest.version} has been downloaded.`,
-      detail:
-        'Click "Install now" to close STREAM1 and apply the update. ' +
-        'STREAM1 Server will reopen automatically when finished.',
-      buttons: ['Install now', 'Install on next quit'],
-      defaultId: 0,
-      cancelId: 1,
-      noLink: true,
-    });
-
-    if (ready.response === 0) {
-      spawn('cmd.exe', ['/c', scriptPath], {
-        detached: true,
-        stdio: 'ignore',
-        windowsHide: true,
-      }).unref();
-      app.quit();
-    }
+    await runUpdateFlow(manifest);
   } catch (err) {
+    closeUpdateProgressWindow();
     await dialog.showMessageBox(win, {
       type: 'error',
       title: 'Update failed',
-      message: 'Could not download the update.',
+      message: 'Could not complete the update.',
       detail: (err && err.message) || String(err),
       buttons: ['OK'],
     });
   }
 }
 
-async function checkForUpdates({ silent = true } = {}) {
+async function checkForUpdates({ silent = true, ignoreSnooze = false } = {}) {
   if (!app.isPackaged || !updatesEnabled() || checking) return null;
   checking = true;
 
@@ -317,23 +370,23 @@ async function checkForUpdates({ silent = true } = {}) {
 
     if (!isNewerVersion(manifest.version, currentVersion())) {
       if (!silent) {
-        const win = parentWindow();
+        const win = revealServerWindow();
         await dialog.showMessageBox(win, {
           type: 'info',
           title: 'No update',
           message: 'You already have the latest version.',
-          detail: `Current version: ${currentVersion()}`,
+          detail: `Current version: v${currentVersion()}`,
           buttons: ['OK'],
         });
       }
       return null;
     }
 
-    await promptForUpdate(manifest);
+    await promptForUpdate(manifest, { ignoreSnooze: !silent || ignoreSnooze });
     return manifest;
   } catch (err) {
     if (!silent) {
-      const win = parentWindow();
+      const win = revealServerWindow();
       await dialog.showMessageBox(win, {
         type: 'warning',
         title: 'Update check failed',
@@ -353,12 +406,19 @@ function scheduleUpdateChecks() {
 
   setTimeout(() => {
     checkForUpdates({ silent: true });
-  }, CHECK_DELAY_MS);
+  }, INITIAL_CHECK_DELAY_MS);
 
   if (checkTimer) clearInterval(checkTimer);
   checkTimer = setInterval(() => {
     checkForUpdates({ silent: true });
-  }, CHECK_INTERVAL_MS);
+  }, SERVER_CHECK_INTERVAL_MS);
+}
+
+function getUpdateUiState() {
+  return {
+    enabled: app.isPackaged && updatesEnabled(),
+    version: currentVersion(),
+  };
 }
 
 module.exports = {
@@ -366,4 +426,5 @@ module.exports = {
   scheduleUpdateChecks,
   currentVersion,
   updatesEnabled,
+  getUpdateUiState,
 };

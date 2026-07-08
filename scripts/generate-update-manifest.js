@@ -20,6 +20,7 @@ const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
 const SHIPPED = {
   server: 'STREAM1 Server.exe',
   app: 'STREAM1 App.exe',
+  updater: 'STREAM1 Update.exe',
 };
 
 function parseArgs(argv) {
@@ -56,8 +57,13 @@ function sha256File(filePath) {
   return hash.digest('hex').toLowerCase();
 }
 
-function encodeAssetName(name) {
-  return encodeURIComponent(name).replace(/%20/g, '+');
+function githubReleaseAssetFileName(localFileName) {
+  // GitHub release uploads store "STREAM1 Server.exe" as "STREAM1.Server.exe".
+  return localFileName.replace(/ /g, '.');
+}
+
+function releaseDownloadUrl(baseUrl, localFileName) {
+  return `${baseUrl}/${encodeURIComponent(githubReleaseAssetFileName(localFileName))}`;
 }
 
 function main() {
@@ -73,8 +79,8 @@ function main() {
     }
 
     const url = args.baseUrl
-      ? `${args.baseUrl}/${encodeAssetName(fileName)}`
-      : `REPLACE_WITH_DOWNLOAD_URL/${encodeAssetName(fileName)}`;
+      ? releaseDownloadUrl(args.baseUrl, fileName)
+      : `REPLACE_WITH_DOWNLOAD_URL/${encodeURIComponent(githubReleaseAssetFileName(fileName))}`;
 
     files[key] = {
       name: fileName,

@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 48" role="img" aria-label="STREAM1">
+  <circle cx="24" cy="24" r="20" fill="#2563eb"/>
+  <polygon points="18,15 34,24 18,33" fill="#ffffff"/>
+  <text x="56" y="32" fill="#ffffff" font-family="Segoe UI, system-ui, sans-serif" font-size="22" font-weight="800" letter-spacing="0.08em">STREAM1</text>
+</svg>

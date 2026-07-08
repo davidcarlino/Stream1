@@ -6,6 +6,8 @@
  * local gear (192.168.x.x, etc.) without certificate interstitials.
  */
 
+const extraTrustedHosts = new Set();
+
 function isPrivateLanHostname(hostname) {
   if (!hostname || typeof hostname !== 'string') return false;
 
@@ -39,8 +41,29 @@ function isPrivateLanUrl(url) {
   return isPrivateLanHostname(hostnameFromUrl(url));
 }
 
+function registerTrustedControlUrls(urls) {
+  if (!urls) return;
+  const list = Array.isArray(urls) ? urls : [urls];
+  for (const raw of list) {
+    if (!raw || typeof raw !== 'string') continue;
+    try {
+      extraTrustedHosts.add(new URL(raw).hostname.toLowerCase());
+    } catch {
+      /* ignore invalid URLs */
+    }
+  }
+}
+
 function shouldTrustLanCertificate(hostnameOrUrl, { fromUrl = false } = {}) {
-  return fromUrl ? isPrivateLanUrl(hostnameOrUrl) : isPrivateLanHostname(hostnameOrUrl);
+  if (fromUrl) {
+    const host = hostnameFromUrl(hostnameOrUrl).toLowerCase();
+    if (host && extraTrustedHosts.has(host)) return true;
+    return isPrivateLanUrl(hostnameOrUrl);
+  }
+
+  const host = String(hostnameOrUrl || '').toLowerCase();
+  if (host && extraTrustedHosts.has(host)) return true;
+  return isPrivateLanHostname(hostnameOrUrl);
 }
 
 let appHandlerInstalled = false;
@@ -73,6 +96,10 @@ function applySessionLanCertificateBypass(session) {
       callback(0);
       return;
     }
+    if (request.url && shouldTrustLanCertificate(request.url, { fromUrl: true })) {
+      callback(0);
+      return;
+    }
     callback(-2);
   });
 }
@@ -90,6 +117,7 @@ function installWebContentsLanCertificateBypass(app) {
 module.exports = {
   isPrivateLanHostname,
   isPrivateLanUrl,
+  registerTrustedControlUrls,
   installLanCertificateBypass,
   applySessionLanCertificateBypass,
   installWebContentsLanCertificateBypass,

@@ -1,13 +1,11 @@
 import { api } from '../api.js';
-import { h, esc, toast, copyToClipboard, confirmDialog, busy } from '../ui.js';
+import { h, esc, toast, copyToClipboard, confirmDialog, adminConfirmDialog, busy } from '../ui.js';
 import { shareWatchBlock } from '../shareLink.js';
 import { openStreamEmail } from '../shareEmail.js';
+import { openStreamSms, isSmsShareAvailable } from '../shareSms.js';
 import { youtubeEmbedIframeHtml } from '../youtubeEmbed.js';
 import {
-  canStartStream,
-  canStopStream,
   isActiveStreamTarget,
-  wireStreamControl,
 } from '../streamControls.js';
 import { downloadStreamRecording } from '../streamDownload.js';
 
@@ -72,6 +70,14 @@ function matchesSearch(s, q) {
   return hay.includes(q);
 }
 
+function streamThumbnailSrc(s) {
+  if (s.restreamPending) return '';
+  if (s.thumbnail && String(s.thumbnail).startsWith('/api/')) return s.thumbnail;
+  const id = s.videoId || s.broadcastId;
+  if (!id) return '';
+  return `/api/streams/${encodeURIComponent(id)}/thumbnail`;
+}
+
 export async function renderHistory(ctx = {}) {
   const isAdmin = ctx.state && ctx.state.user && ctx.state.user.role === 'admin';
   const node = h('<div></div>');
@@ -82,7 +88,7 @@ export async function renderHistory(ctx = {}) {
 
 async function load(node, forceRefresh, isAdmin) {
   node.innerHTML = `<h1>Streams</h1>
-    <p class="subtitle">Upcoming and past broadcasts. Use <strong>Start stream</strong> to send the Streamer feed to the event you chose.</p>
+    <p class="subtitle">Upcoming and past broadcasts. Going live is automatic when the Streamer (ATEM) starts sending.</p>
     <div class="streams-toolbar">
       <input type="search" class="streams-search" id="search" placeholder="Search by title or template…" aria-label="Search streams" />
       <div class="streams-toolbar-actions">
@@ -175,18 +181,63 @@ function sectionBlock(title, hint, items, node, isAdmin, activeBroadcastId, spac
   return block;
 }
 
+function deleteStreamMessage(s, isTarget) {
+  const title = s.title || 'this stream';
+  if (s.restreamPending) {
+    return `Remove "${title}"? Nothing has been created on YouTube yet. This cannot be undone.`;
+  }
+  let msg = `Are you sure you want to delete "${title}"? It will be removed from STREAM1 and YouTube. This cannot be undone.`;
+  if (s.statusLabel === 'Live' || isTarget) {
+    msg = `This stream is live or set as the on-air target. ${msg}`;
+  }
+  return msg;
+}
+
+async function confirmAdminStreamAction(s, { title, message, confirmText = 'Continue' }) {
+  const sure = await confirmDialog(title, message, { danger: true, confirmText });
+  if (!sure) return null;
+  return adminConfirmDialog(
+    'Confirm admin',
+    'Enter an admin username and password to confirm this action.',
+    { confirmText, danger: true }
+  );
+}
+
+async function deleteStreamWithConfirm(s, node, isAdmin, isTarget, { recreate = false } = {}) {
+  const title = recreate ? 'Cancel & Recreate' : 'Delete stream';
+  const message = recreate
+    ? 'This deletes the stuck broadcast and creates a fresh one bound to the same stream key. ATEM does not need changing.'
+    : deleteStreamMessage(s, isTarget);
+  const confirmText = recreate ? 'Recreate' : 'Yes, delete';
+
+  const creds = await confirmAdminStreamAction(s, { title, message, confirmText });
+  if (!creds) return;
+
+  const url = `/api/streams/${encodeURIComponent(s.broadcastId)}${recreate ? '?recreate=1' : ''}`;
+  const res = await api.del(url, creds);
+  if (!res.ok) return toast(res.error, 'err');
+  toast(recreate ? 'Recreated. Ready to stream.' : 'Stream deleted.', 'ok');
+  load(node, true, isAdmin);
+}
+
 function rowEl(s, node, isAdmin, activeBroadcastId) {
   const pending = Boolean(s.restreamPending);
-  const showStart = !pending && canStartStream(s);
-  const showStop = !pending && canStopStream(s);
   const isTarget = isActiveStreamTarget(s, activeBroadcastId) || s.statusLabel === 'Live';
 
-  const thumb = s.thumbnail
-    ? `<img class="stream-thumb" src="${esc(s.thumbnail)}" alt="" />`
+  const thumbSrc = streamThumbnailSrc(s);
+  const thumbHtml = thumbSrc
+    ? `<img class="stream-thumb" src="${esc(thumbSrc)}" alt="" loading="lazy" />`
     : `<div class="stream-thumb"></div>`;
 
   const row = h(`<div class="stream-row${isTarget ? ' stream-row-active' : ''}" data-id="${esc(s.broadcastId)}">
-    ${thumb}
+    ${isAdmin ? `<button type="button" class="stream-hide-btn" title="Hide from list" aria-label="Hide from list">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/>
+        <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
+        <line x1="1" y1="1" x2="23" y2="23"/>
+      </svg>
+    </button>` : ''}
+    ${thumbHtml}
     <div class="stream-main">
       <p class="stream-title">${esc(s.title || '(untitled)')}</p>
       <div class="stream-meta">
@@ -198,14 +249,12 @@ function rowEl(s, node, isAdmin, activeBroadcastId) {
         ${s.stuck ? '<span class="badge badge-warn">Stuck — may need recreating</span>' : ''}
       </div>
       <div class="stream-actions mt">
-        ${showStart ? '<button class="btn btn-sm btn-go-live" data-act="go-live" data-label="Start stream">Start stream</button>' : ''}
-        ${showStop ? '<button class="btn btn-sm btn-danger" data-act="stop" data-label="Stop stream">Stop stream</button>' : ''}
         ${pending ? '' : '<button class="btn btn-sm" data-act="play">Play</button>'}
         ${pending ? '' : '<button class="btn btn-sm btn-outline" data-act="share">Share</button>'}
         ${!pending && isAdmin ? '<button class="btn btn-sm btn-outline" data-act="privacy">Privacy</button>' : ''}
         ${!pending && isPastStream(s) ? '<button class="btn btn-sm btn-outline" data-act="download">Download</button>' : ''}
         ${isAdmin && s.stuck ? '<button class="btn btn-sm btn-danger" data-act="recreate">Cancel &amp; Recreate</button>' : ''}
-        ${pending && isAdmin ? '<button class="btn btn-sm btn-danger" data-act="cancel-pending">Cancel event</button>' : ''}
+        ${isAdmin ? '<button class="btn btn-sm btn-outline btn-danger" data-act="delete">Delete</button>' : ''}
       </div>
       <div class="player-slot"></div>
     </div>
@@ -222,47 +271,38 @@ function rowEl(s, node, isAdmin, activeBroadcastId) {
     };
   }
 
-  const cancelPending = row.querySelector('[data-act="cancel-pending"]');
-  if (cancelPending) {
-    cancelPending.onclick = async () => {
-      const ok = await confirmDialog('Cancel event', `Remove "${s.title || 'this event'}"? Nothing has been created on YouTube yet.`, { danger: true, confirmText: 'Remove' });
-      if (!ok) return;
-      const res = await api.del(`/api/streams/${encodeURIComponent(s.broadcastId)}`);
-      if (!res.ok) return toast(res.error, 'err');
-      toast('Event removed.', 'ok');
-      load(node, true, isAdmin);
-    };
-  }
-
   const shareBtn = row.querySelector('[data-act="share"]');
   if (shareBtn) shareBtn.onclick = () => sharePanel(s);
   const downloadBtn = row.querySelector('[data-act="download"]');
   if (downloadBtn) {
     downloadBtn.onclick = () => downloadStreamRecording(s, { busyTarget: downloadBtn });
   }
-  row.querySelectorAll('[data-act="go-live"], [data-act="stop"]').forEach((btn) => {
-    wireStreamControl(btn, {
-      broadcastId: s.broadcastId,
-      title: s.title,
-      onDone: () => load(node, true, isAdmin),
-      busyFn: busy,
-    });
-  });
   const privacyBtn = row.querySelector('[data-act="privacy"]');
   if (privacyBtn) privacyBtn.onclick = () => privacyPanel(s, node, isAdmin);
 
   const recreate = row.querySelector('[data-act="recreate"]');
   if (recreate) {
-    recreate.onclick = async () => {
+    recreate.onclick = () => deleteStreamWithConfirm(s, node, isAdmin, isTarget, { recreate: true });
+  }
+
+  const deleteBtn = row.querySelector('[data-act="delete"]');
+  if (deleteBtn) {
+    deleteBtn.onclick = () => deleteStreamWithConfirm(s, node, isAdmin, isTarget);
+  }
+
+  const hideBtn = row.querySelector('.stream-hide-btn');
+  if (hideBtn) {
+    hideBtn.onclick = async (e) => {
+      e.stopPropagation();
       const ok = await confirmDialog(
-        'Cancel & Recreate',
-        'This deletes the stuck broadcast and creates a fresh one bound to the same stream key. ATEM does not need changing.',
-        { danger: true, confirmText: 'Recreate' }
+        'Hide stream',
+        `Hide "${s.title || 'this stream'}" from the Streams page? You can unhide it later in Settings.`,
+        { confirmText: 'Hide' }
       );
       if (!ok) return;
-      const res = await api.del(`/api/streams/${encodeURIComponent(s.broadcastId)}?recreate=1`);
+      const res = await api.put(`/api/streams/${encodeURIComponent(s.broadcastId)}/hidden`, { hidden: true });
       if (!res.ok) return toast(res.error, 'err');
-      toast('Recreated. Ready to stream.', 'ok');
+      toast('Stream hidden.', 'ok');
       load(node, true, isAdmin);
     };
   }
@@ -271,7 +311,10 @@ function rowEl(s, node, isAdmin, activeBroadcastId) {
 }
 
 function sharePanel(s) {
-  import('../ui.js').then(({ modal }) => {
+  import('../ui.js').then(async ({ modal }) => {
+    const smsRes = await api.get('/api/sms/status');
+    const smsOn = smsRes.ok && isSmsShareAvailable(smsRes.data);
+
     modal((close) => {
       const el = h(`<div>
         <h2>Share</h2>
@@ -279,7 +322,7 @@ function sharePanel(s) {
         ${shareWatchBlock(s.watchUrl, { copyId: 'copy' })}
         <div class="btn-row mt">
           <button type="button" class="btn btn-outline" id="emailBtn">Email</button>
-          <a class="btn btn-outline" href="sms:?&body=${encodeURIComponent((s.title ? s.title + ' — ' : '') + s.watchUrl)}">Text</a>
+          ${smsOn ? '<button type="button" class="btn btn-outline" id="textBtn">Text</button>' : ''}
           <button class="btn" id="done">Done</button>
         </div>
       </div>`);
@@ -288,6 +331,8 @@ function sharePanel(s) {
         toast(ok ? 'Copied.' : 'Copy manually.', ok ? 'ok' : 'err');
       };
       el.querySelector('#emailBtn').onclick = () => openStreamEmail(s);
+      const textBtn = el.querySelector('#textBtn');
+      if (textBtn) textBtn.onclick = () => openStreamSms(s);
       el.querySelector('#done').onclick = () => close(true);
       if (navigator.share) {
         const btn = h('<button class="btn btn-outline">More…</button>');

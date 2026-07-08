@@ -39,10 +39,10 @@ const config = {
   mongoPort: parseInt(optional('MONGO_PORT', '15001'), 10),
   dataDir: null,
 
-  streamControlTabletUrl: optional('STREAM1_CONTROL_TABLET_URL', 'https://192.168.0.108:8000/tablet'),
+  streamControlTabletUrl: optional('STREAM1_CONTROL_TABLET_URL', 'http://192.168.0.108:8000/tablet'),
   volumeControlUrl: optional(
     'STREAM1_VOLUME_CONTROL_URL',
-    'https://192.168.0.201/uci-viewer/?uci=TSC&file=1.UCI.xml&directory=/designs/current_design/UCIs/'
+    'http://192.168.0.201/uci-viewer/?uci=TSC&file=1.UCI.xml&directory=/designs/current_design/UCIs/'
   ),
 
   google: {
@@ -70,6 +70,20 @@ const config = {
     scopes: ['profile.default.read', 'channels.default.read', 'channels.default.write', 'stream.default.read'],
   },
 
+  gmail: {
+    redirectUri: `${appBaseUrl}/gmail/oauth2callback`,
+    scopes: [
+      'https://www.googleapis.com/auth/gmail.send',
+      'https://www.googleapis.com/auth/userinfo.email',
+    ],
+  },
+
+  clicksend: {
+    username: optional('CLICKSEND_USERNAME', ''),
+    apiKey: optional('CLICKSEND_API_KEY', ''),
+    from: optional('CLICKSEND_FROM', ''),
+  },
+
   // 30-day rolling cookie so volunteers are not re-logging in constantly.
   sessionMaxAgeMs: 30 * 24 * 60 * 60 * 1000,
 
@@ -92,8 +106,8 @@ const config = {
     if (clientSecret !== undefined) config.google.clientSecret = clientSecret;
   },
 
-  loadEnvFiles(extraDirs) {
-    reloadEnvFromDirs(extraDirs);
+  loadEnvFiles(extraDirs, opts) {
+    reloadEnvFromDirs(extraDirs, opts);
   },
 
   googleConfigured() {
@@ -103,22 +117,43 @@ const config = {
   facebookConfigured() {
     return Boolean(config.facebook.appId && config.facebook.appSecret);
   },
+
+  clickSendConfigured() {
+    return Boolean(config.clicksend.username && config.clicksend.apiKey);
+  },
 };
 
-function refreshGoogleFromEnv() {
+function refreshRuntimeFromEnv() {
+  config.port = parseInt(optional('PORT', String(config.port || 15000)), 10);
+  config.appBaseUrl = optional('APP_BASE_URL', `http://localhost:${config.port}`).replace(/\/$/, '');
+  config.mongoDbName = optional('MONGODB_DB', config.mongoDbName || 'stream1');
+  config.mongoPort = parseInt(optional('MONGO_PORT', String(config.mongoPort || 15001)), 10);
+  config.streamControlTabletUrl = optional(
+    'STREAM1_CONTROL_TABLET_URL',
+    'http://192.168.0.108:8000/tablet'
+  );
+  config.volumeControlUrl = optional(
+    'STREAM1_VOLUME_CONTROL_URL',
+    'http://192.168.0.201/uci-viewer/?uci=TSC&file=1.UCI.xml&directory=/designs/current_design/UCIs/'
+  );
   config.google.clientId = optional('GOOGLE_CLIENT_ID', '');
   config.google.clientSecret = optional('GOOGLE_CLIENT_SECRET', '');
-  config.google.redirectUri = `${appBaseUrl.replace(/\/$/, '')}/oauth2callback`;
+  config.google.redirectUri = `${config.appBaseUrl}/oauth2callback`;
   config.facebook.appId = optional('FACEBOOK_APP_ID', '');
   config.facebook.appSecret = optional('FACEBOOK_APP_SECRET', '');
-  config.facebook.redirectUri = `${appBaseUrl.replace(/\/$/, '')}/facebook/oauth2callback`;
+  config.facebook.redirectUri = `${config.appBaseUrl}/facebook/oauth2callback`;
   config.restream.clientId = optional('RESTREAM_CLIENT_ID', '');
   config.restream.clientSecret = optional('RESTREAM_CLIENT_SECRET', '');
-  config.restream.redirectUri = `${appBaseUrl.replace(/\/$/, '')}/restream/oauth2callback`;
+  config.restream.redirectUri = `${config.appBaseUrl}/restream/oauth2callback`;
+  config.gmail.redirectUri = `${config.appBaseUrl}/gmail/oauth2callback`;
+  config.clicksend.username = optional('CLICKSEND_USERNAME', '');
+  config.clicksend.apiKey = optional('CLICKSEND_API_KEY', '');
+  config.clicksend.from = optional('CLICKSEND_FROM', '');
 }
 
 /** Load .env from project root, cwd, packaged exe folder, and optional data folder. */
-function reloadEnvFromDirs(extraDirs = []) {
+function reloadEnvFromDirs(extraDirs = [], opts = {}) {
+  const override = Boolean(opts.override);
   const dirs = new Set(
     [
       process.cwd(),
@@ -129,9 +164,9 @@ function reloadEnvFromDirs(extraDirs = []) {
   );
 
   for (const dir of dirs) {
-    dotenv.config({ path: path.join(dir, '.env') });
+    dotenv.config({ path: path.join(dir, '.env'), override });
   }
-  refreshGoogleFromEnv();
+  refreshRuntimeFromEnv();
 }
 
 reloadEnvFromDirs();

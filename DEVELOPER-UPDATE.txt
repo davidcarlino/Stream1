@@ -1,0 +1,61 @@
+STREAM1 — publish an update to GitHub Releases
+===============================================
+
+Git push and release publish use DIFFERENT auth on Windows.
+Git push (browser login) works. Release upload needs GITHUB_TOKEN in .env.
+
+ONE-TIME: create a GitHub token
+-------------------------------
+1. Open https://github.com/settings/tokens/new
+2. Classic token → name it "STREAM1 releases" → tick "repo"
+   OR fine-grained → Contents: Read and write on davidcarlino/Stream1
+3. Copy the token (starts with ghp_)
+
+Add to your local .env (never commit):
+  GITHUB_TOKEN=ghp_paste_your_token_here
+  STREAM1_GITHUB_REPO=davidcarlino/Stream1
+
+Each new release (PowerShell — use ONE of these)
+-------------------------------------------------
+
+Option A — single command (recommended on Windows PowerShell):
+  npm run release -- --version 1.0.4 --notes "Bug fixes"
+
+Option B — two lines (works everywhere):
+  npm install
+  npm run publish:update -- --version 1.0.4 --notes "Bug fixes"
+
+Option C — Command Prompt (cmd.exe) only — && works there:
+  npm install && npm run publish:update -- --version 1.0.4 --notes "Bug fixes"
+
+PowerShell does NOT support && on older versions — that is why chained commands fail.
+
+publish:update updates package.json, runs npm run build, then uploads to GitHub.
+Also creates dist/stream1 vX.Y.Z.zip with all shipped exes + latest.json.
+The version badge (top-right of STREAM1 Server) comes from package.json at build time.
+
+Already built? Skip rebuild:
+  npm run publish:update -- --version 1.0.4 --notes "Bug fixes" --skip-build
+
+Church PCs (.env next to exes — set once, never change):
+  STREAM1_UPDATE_MANIFEST_URL=https://github.com/davidcarlino/Stream1/releases/download/latest/latest.json
+
+Update prompts (STREAM1 Server only):
+  - First check ~8 seconds after startup, then every 2 hours
+  - Dialog: "Update now" or "Later"
+  - Later = remind again in 4 hours
+  - Tray → Check for updates… bypasses snooze immediately
+
+Do NOT run: npm install gh
+That is an old npm package, not GitHub CLI, and will fail with "Error creating GitHub token".
+
+
+
+QUICK VERSION (PowerShell):
+
+  npm run release -- --version 1.0.4 --notes "Bug fixes"
+  
+
+Or if dist/ is already built:
+
+  npm run publish:update -- --version 1.0.4 --notes "Bug fixes" --skip-build

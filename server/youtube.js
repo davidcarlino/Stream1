@@ -380,6 +380,49 @@ async function addToPlaylist(playlistId, videoId) {
 
 /* ------------------------------- Thumbnails ------------------------------ */
 
+/** Standard YouTube CDN thumbnail when the API returns none (liveBroadcasts often omit these). */
+function defaultThumbnailUrl(videoId) {
+  const id = String(videoId || '').trim();
+  if (!id) return null;
+  return `https://i.ytimg.com/vi/${encodeURIComponent(id)}/mqdefault.jpg`;
+}
+
+function thumbnailFromSnippet(thumbnails, videoId) {
+  if (thumbnails) {
+    const pick =
+      thumbnails.maxres ||
+      thumbnails.standard ||
+      thumbnails.high ||
+      thumbnails.medium ||
+      thumbnails.default;
+    if (pick && pick.url) return pick.url;
+  }
+  return defaultThumbnailUrl(videoId);
+}
+
+/** Batch-resolve thumbnails via videos.list (authoritative) with CDN fallback per id. */
+async function listVideoThumbnails(videoIds) {
+  const ids = [...new Set((videoIds || []).map((id) => String(id || '').trim()).filter(Boolean))];
+  const out = new Map();
+  if (!ids.length) return out;
+
+  await withYouTube(async (youtube) => {
+    for (let i = 0; i < ids.length; i += 50) {
+      const chunk = ids.slice(i, i + 50);
+      // eslint-disable-next-line no-await-in-loop
+      const res = await youtube.videos.list({ part: ['snippet'], id: chunk });
+      for (const item of res.data.items || []) {
+        out.set(item.id, thumbnailFromSnippet(item.snippet && item.snippet.thumbnails, item.id));
+      }
+    }
+  });
+
+  for (const id of ids) {
+    if (!out.has(id)) out.set(id, defaultThumbnailUrl(id));
+  }
+  return out;
+}
+
 async function setThumbnail(videoId, imageBuffer, mimeType) {
   return withYouTube(async (youtube) => {
     const res = await youtube.thumbnails.set({
@@ -411,4 +454,7 @@ module.exports = {
   createPlaylist,
   addToPlaylist,
   setThumbnail,
+  defaultThumbnailUrl,
+  thumbnailFromSnippet,
+  listVideoThumbnails,
 };

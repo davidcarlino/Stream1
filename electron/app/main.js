@@ -3,23 +3,48 @@
 const path = require('path');
 const fs = require('fs');
 const { app, BrowserWindow, shell, dialog, ipcMain, net, session } = require('electron');
+const { configureElectronProfile } = require('../shared/electronProfile');
+
+configureElectronProfile('stream1-app');
 
 // Trust self-signed HTTPS on LAN gear (stream / volume control iframes).
 app.commandLine.appendSwitch('allow-insecure-localhost');
 app.commandLine.appendSwitch('ignore-certificate-errors');
 
-const { baseUrl, ensureServerRunning } = require('../shared/serverClient');
-const { projectRoot } = require('../shared/paths');
+const { baseUrl, ping, ensureServerRunning, restartServer } = require('../shared/serverClient');
+const { launchFullStream1Restart } = require('../shared/stream1Restart');
+const { projectRoot, installDir, rememberInstallDir } = require('../shared/paths');
 const { loadAppIcon } = require('../shared/icon');
+const {
+  installProcessHandlers,
+  attachWindowDiagnostics,
+  logDiagnostic,
+  getRecentLogs,
+  clearLogs,
+} = require('../shared/diagnosticLog');
 const {
   installLanCertificateBypass,
   applySessionLanCertificateBypass,
   installWebContentsLanCertificateBypass,
+  registerTrustedControlUrls,
 } = require('../shared/lanCertificates');
-const { scheduleUpdateChecks } = require('../shared/updater');
+const { enforceSingleInstance, focusBrowserWindow } = require('../shared/singleInstance');
 
 installLanCertificateBypass(app);
 installWebContentsLanCertificateBypass(app);
+installProcessHandlers('app');
+
+if (process.platform === 'win32') {
+  app.setAppUserModelId('com.stream1.app');
+}
+
+if (
+  !enforceSingleInstance(app, () => {
+    focusBrowserWindow(mainWindow);
+  })
+) {
+  return;
+}
 
 let mainWindow = null;
 
@@ -40,15 +65,48 @@ function showConnectError(result) {
   mainWindow.webContents.once('did-finish-load', sendPayload);
 }
 
-async function tryConnectAndLoad() {
-  mainWindow.loadURL(showSplash('Starting STREAM1', 'Connecting to the local server…'));
+async function registerControlUrlTrust() {
+  return new Promise((resolve) => {
+    const request = net.request(`${baseUrl()}/api/auth/session`);
+    let body = '';
+    request.on('response', (response) => {
+      response.on('data', (chunk) => {
+        body += chunk.toString();
+      });
+      response.on('end', () => {
+        try {
+          const data = JSON.parse(body);
+          registerTrustedControlUrls([data.streamControlTabletUrl, data.volumeControlUrl]);
+        } catch {
+          /* ignore */
+        }
+        resolve();
+      });
+    });
+    request.on('error', () => resolve());
+    request.end();
+  });
+}
 
-  const result = await ensureServerRunning();
+async function tryConnectAndLoad() {
+  await mainWindow
+    .loadURL(showSplash('Starting STREAM1', 'Connecting to the local server…'))
+    .catch(() => {});
+
+  if (await ping()) {
+    await registerControlUrlTrust();
+    await mainWindow.loadURL(baseUrl());
+    return true;
+  }
+
+  const result = await ensureServerRunning({ allowSpawn: true });
   if (!result.ok) {
+    logDiagnostic('app', 'error', 'Could not connect to STREAM1 Server on startup', result);
     showConnectError(result);
     return false;
   }
 
+  await registerControlUrlTrust();
   await mainWindow.loadURL(baseUrl());
   return true;
 }
@@ -80,35 +138,38 @@ async function createWindow() {
     title: 'STREAM1 - Pro Streaming Management Software',
     backgroundColor: '#0f172a',
     autoHideMenuBar: true,
-    show: false,
+    show: true,
     icon: loadAppIcon(),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true,
+      sandbox: false,
+      allowRunningInsecureContent: true,
     },
   });
 
-  mainWindow.once('ready-to-show', () => mainWindow.show());
-
   applySessionLanCertificateBypass(mainWindow.webContents.session);
+  attachWindowDiagnostics(mainWindow, 'app');
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
     return { action: 'deny' };
   });
 
+  logDiagnostic('app', 'info', 'STREAM1 App window opened', { installDir: installDir() });
+
   const connected = await tryConnectAndLoad();
-  if (!connected) return;
+  if (!connected) {
+    mainWindow.on('closed', () => {
+      mainWindow = null;
+    });
+    return;
+  }
 
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
-}
-
-if (process.platform === 'win32') {
-  app.setAppUserModelId('com.stream1.app');
 }
 
 function sanitizeFilename(title) {
@@ -158,7 +219,45 @@ ipcMain.handle('retry-connection', async () => {
     });
     return payload;
   }
+  await registerControlUrlTrust();
   await mainWindow.loadURL(baseUrl());
+  return { ok: true };
+});
+
+ipcMain.handle('register-lan-control-urls', (_event, urls) => {
+  const list =
+    urls && typeof urls === 'object'
+      ? [urls.stream, urls.volume].filter((value) => typeof value === 'string' && value)
+      : [];
+  registerTrustedControlUrls(list);
+  return { ok: true };
+});
+
+ipcMain.handle('restart-server', async () => {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return { ok: false, error: 'Window is not available.' };
+  }
+  mainWindow.loadURL(showSplash('Restarting server', 'Stopping and starting STREAM1 Server…'));
+  const result = await restartServer();
+  if (!result.ok) {
+    showConnectError(result);
+    return {
+      ok: false,
+      error: result.error,
+      needsSetup: Boolean(result.needsSetup),
+    };
+  }
+  await registerControlUrlTrust();
+  await mainWindow.loadURL(baseUrl());
+  return { ok: true, restarted: Boolean(result.restarted) };
+});
+
+ipcMain.handle('full-restart-stream1', async () => {
+  const result = launchFullStream1Restart();
+  if (!result.ok) return result;
+  setTimeout(() => {
+    app.exit(0);
+  }, 400);
   return { ok: true };
 });
 
@@ -215,10 +314,17 @@ ipcMain.handle('save-stream-download', async (event, { broadcastId, title }) => 
 });
 
 app.whenReady().then(() => {
-  process.env.STREAM1_ROOT = projectRoot();
-  applySessionLanCertificateBypass(session.defaultSession);
-  createWindow();
-  scheduleUpdateChecks();
+  try {
+    const dir = installDir();
+    process.env.STREAM1_ROOT = projectRoot();
+    process.env.STREAM1_INSTALL_DIR = dir;
+    rememberInstallDir(dir);
+    applySessionLanCertificateBypass(session.defaultSession);
+    createWindow();
+  } catch (err) {
+    logDiagnostic('app', 'fatal', 'App failed during startup', err);
+    app.exit(1);
+  }
 });
 
 app.on('window-all-closed', () => {

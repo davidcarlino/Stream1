@@ -11,6 +11,15 @@ const router = express.Router();
 const PRIVACY = ['public', 'unlisted', 'private'];
 const { normalizeTime, sanitizeTemplateTimePresets } = require('../timePresets');
 
+const DEFAULT_SMS_BODY = `{title}
+
+Here is the streaming link for {title}
+
+{link}
+
+Thank you,
+{church_name}`;
+
 function sanitizeTemplate(body) {
   const name = (body.name || '').trim();
   if (!name) throw new AppError('Template needs a name.', { status: 400, code: 'invalid' });
@@ -56,6 +65,10 @@ function sanitizeTemplate(body) {
       body.emailBodyPattern != null && String(body.emailBodyPattern).trim()
         ? String(body.emailBodyPattern)
         : 'You can watch the live stream here:\n\n{link}\n',
+    smsBodyPattern:
+      body.smsBodyPattern != null && String(body.smsBodyPattern).trim()
+        ? String(body.smsBodyPattern)
+        : DEFAULT_SMS_BODY,
     extraFields,
   };
 }

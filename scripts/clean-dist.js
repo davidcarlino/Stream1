@@ -16,6 +16,7 @@ const distDir = path.join(__dirname, '..', 'dist');
 const SHIPPED_EXES = new Set([
   'STREAM1 Server.exe',
   'STREAM1 App.exe',
+  'STREAM1 Update.exe',
 ]);
 
 const pruneOnly = process.argv.includes('--prune');

@@ -39,7 +39,13 @@ function setState(patch) {
   }
 }
 
-async function resolveDataDirectory(pickFolder) {
+async function resolveDataDirectory(pickFolder, forceDataDir) {
+  if (forceDataDir) {
+    const fs = require('fs');
+    fs.mkdirSync(forceDataDir, { recursive: true });
+    return forceDataDir;
+  }
+
   if (process.env.STREAM1_DATA_DIR) {
     const dir = process.env.STREAM1_DATA_DIR;
     const fs = require('fs');
@@ -88,7 +94,7 @@ async function start(options = {}) {
   setState({ phase: 'starting', error: null, message: 'Choosing database folder…' });
 
   try {
-    const dir = await resolveDataDirectory(options.pickFolder);
+    const dir = await resolveDataDirectory(options.pickFolder, options.forceDataDir);
     if (!dir) {
       setState({
         phase: 'error',
@@ -99,7 +105,7 @@ async function start(options = {}) {
     }
 
     setState({ dataDir: dir, message: 'Loading secrets…' });
-    config.loadEnvFiles([dir]);
+    config.loadEnvFiles([...(options.envDirs || []), dir], options.envOverride ? { override: true } : undefined);
     const sec = secrets.loadOrCreate(dir);
     config.setSecrets(sec);
 
@@ -183,6 +189,28 @@ async function shutdown() {
   });
 }
 
-const bootstrap = { start, shutdown, getStatus, onStatusChange: null };
+async function reloadEnvAndRestart(extraDirs = [], opts = {}) {
+  const dir = state.dataDir;
+  if (!dir) {
+    throw new Error('No database folder. Start STREAM1 Server first.');
+  }
+
+  const onStatusChange = bootstrap.onStatusChange;
+  if (state.phase !== 'idle') {
+    await shutdown();
+  }
+
+  const envDirs = [...extraDirs, dir].filter(Boolean);
+  config.loadEnvFiles(envDirs, { override: true });
+
+  return start({
+    onStatusChange,
+    forceDataDir: dir,
+    envDirs: extraDirs.filter((d) => d && d !== dir),
+    envOverride: true,
+  });
+}
+
+const bootstrap = { start, shutdown, reloadEnvAndRestart, getStatus, onStatusChange: null };
 
 module.exports = bootstrap;

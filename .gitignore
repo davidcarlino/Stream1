@@ -8,6 +8,15 @@
 *.pfx
 certs/*.pfx
 
+# Common manual env backups / renamed copies (e.g. oldenv.txt)
+# These do not match the .env.* pattern so they can sneak in.
+oldenv*
+*oldenv*
+env.txt
+*-env.txt
+env-*
+*env*.bak
+
 # Atlas setup output (contains generated DB credentials) — legacy cloud script
 scripts/.atlas-output.json
 

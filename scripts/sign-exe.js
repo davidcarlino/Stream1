@@ -11,6 +11,7 @@ const path = require('path');
 const SHIPPED = {
   server: { file: 'STREAM1 Server.exe', description: 'STREAM1 Server' },
   app: { file: 'STREAM1 App.exe', description: 'STREAM1 - Pro Streaming Management Software' },
+  updater: { file: 'STREAM1 Update.exe', description: 'STREAM1 Update' },
 };
 
 function sleep(ms) {

@@ -3,6 +3,8 @@ import { h, esc, toast, busy, copyToClipboard, confirmDialog } from '../ui.js';
 import { startYouTubeConnect } from '../youtubeConnect.js';
 import { startFacebookConnect } from '../facebookConnect.js';
 import { startRestreamConnect } from '../restreamConnect.js';
+import { startGmailConnect } from '../gmailConnect.js';
+import { openSmsLogsModal } from '../smsLogs.js';
 import { mountProtectedStreamKey, showRevealedStreamKey } from '../streamKeyReveal.js';
 import { refreshHealth } from '../health.js';
 import { healthState } from '../healthState.js';
@@ -19,7 +21,7 @@ function readYoutubeParam() {
   return m ? m[1] : null;
 }
 
-function healthStatusHtml(issues) {
+function healthStatusHtml(issues, { isAdmin = false } = {}) {
   if (!issues || issues.length === 0) {
     return '<p class="settings-status-ok">✅ No issues detected.</p>';
   }
@@ -27,9 +29,9 @@ function healthStatusHtml(issues) {
     .map((issue) => {
       const amber = issue.fix ? '' : ' amber';
       const actions =
-        issue.fix === 'reconnect'
+        isAdmin && issue.fix === 'reconnect'
           ? '<div class="btn-row"><button type="button" class="btn btn-sm" data-health-reconnect>Reconnect YouTube</button></div>'
-          : issue.fix === 'recreate_stream'
+          : isAdmin && issue.fix === 'recreate_stream'
             ? '<div class="btn-row"><button type="button" class="btn btn-sm" data-health-recreate>Recreate stream key</button></div>'
             : '';
       return `<div class="settings-status-issue${amber}"><p>${esc(issue.message)}</p>${actions}</div>`;
@@ -42,9 +44,9 @@ function wireHealthStatus(node, isAdmin) {
   if (!wrap) return;
 
   const render = (issues) => {
-    wrap.innerHTML = healthStatusHtml(issues);
+    wrap.innerHTML = healthStatusHtml(issues, { isAdmin });
     const reconnect = wrap.querySelector('[data-health-reconnect]');
-    if (reconnect) {
+    if (reconnect && isAdmin) {
       reconnect.onclick = async (e) => {
         busy(e.target, true, 'Waiting for sign-in…');
         const result = await startYouTubeConnect({ returnTo: 'settings' });
@@ -90,6 +92,8 @@ async function load(node, isAdmin) {
   const yt = s.youtube || {};
   const fb = s.facebook || {};
   const rs = s.restream || {};
+  const gm = s.gmail || {};
+  const cs = s.clicksend || {};
 
   if (!setRes.ok) {
     node.innerHTML = `<div class="card"><p>${esc(setRes.error || 'Could not load settings.')}</p></div>`;
@@ -103,32 +107,11 @@ async function load(node, isAdmin) {
   if (!isAdmin) {
     node.innerHTML = `
       <h1>Settings</h1>
-      <p class="subtitle">Connect the church accounts so streams and downloads can work.</p>
+      <p class="subtitle">System status for this installation. YouTube, Facebook, and Restream are managed by an admin.</p>
       <div class="card section">
         <h2>System status</h2>
         <div id="healthStatus"></div>
-      </div>
-      <div class="card section">
-        <h2>YouTube connection</h2>
-        <p>${yt.connected ? `✅ Connected${yt.channelTitle ? ` as <strong>${esc(yt.channelTitle)}</strong>` : ''}.` : '⚠️ Not connected — sign in with the church YouTube channel account.'}</p>
-        <div class="btn-row">
-          <button class="btn" id="connect">${yt.connected ? 'Reconnect YouTube' : 'Connect YouTube'}</button>
-        </div>
-      </div>
-      <div class="card section">
-        <h2>Facebook connection</h2>
-        <p>${fb.connected ? `✅ Connected${fb.pageName ? ` — streaming to <strong>${esc(fb.pageName)}</strong>` : ''}.` : '⚠️ Not connected — sign in with the account that manages the church Facebook page.'}</p>
-        <div class="btn-row">
-          <button class="btn" id="connectFb">${fb.connected ? 'Reconnect Facebook' : 'Connect Facebook'}</button>
-        </div>
-        <p class="hint muted">Other settings (users, stream key, church details) are managed by an admin.</p>
-      </div>
-      ${rs.enabled ? `<div class="card section">
-        <h2>Restream</h2>
-        <p>${rs.connected ? `✅ Restream mode is ON${rs.account ? ` — connected as <strong>${esc(rs.account)}</strong>` : ''}. The Streamer feeds Restream, which sends the stream to YouTube and Facebook.` : '⚠️ Restream mode is ON but Restream is not connected — ask an admin.'}</p>
-      </div>` : ''}`;
-    wireYouTube(node, { allowDisconnect: false });
-    wireFacebook(node, { allowDisconnect: false });
+      </div>`;
     wireHealthStatus(node, false);
     return;
   }
@@ -144,6 +127,8 @@ async function load(node, isAdmin) {
   const embed = yt.playlists && yt.playlists.sunday
     ? `https://www.youtube.com/embed/videoseries?list=${esc(yt.playlists.sunday.id)}`
     : '';
+
+  const restreamActive = Boolean(rs.enabled && rs.connected);
 
   node.innerHTML = `
     <h1>Settings</h1>
@@ -182,6 +167,12 @@ async function load(node, isAdmin) {
     </div>
 
     <div class="card section">
+      <h2>Hidden streams</h2>
+      <p class="hint muted">Streams hidden from the Streams page. Hover a stream on the Streams page and click the eye icon to hide it.</p>
+      <div id="hiddenStreams"><p class="muted">Loading…</p></div>
+    </div>
+
+    <div class="card section">
       <h2>YouTube connection</h2>
       <p>${yt.connected ? `✅ Connected${yt.channelTitle ? ` as <strong>${esc(yt.channelTitle)}</strong>` : ''}.` : '⚠️ Not connected.'}</p>
       <div class="btn-row">
@@ -210,7 +201,47 @@ async function load(node, isAdmin) {
         <button class="btn" id="connectFb">${fb.connected ? 'Reconnect' : 'Connect Facebook'}</button>
         ${fb.connected ? '<button class="btn btn-danger" id="disconnectFb">Disconnect</button>' : ''}
       </div>
-      <p class="hint muted">Requires FACEBOOK_APP_ID / FACEBOOK_APP_SECRET in the server .env. Streams simulcast to Facebook via the built-in relay — enable per template or per stream.</p>
+      <p class="hint muted">Requires Facebook App Created.</p>
+    </div>
+
+    <div class="card section">
+      <h2>Email connection</h2>
+      <p class="hint">Send stream watch links by email from the Streams page. </p>
+      <!--Uses the same Google Cloud app as YouTube — add the Gmail redirect URI in Google Console.-->
+      <p>${!gm.configured
+    ? '⚠️ Google OAuth is not configured on this server (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET in .env).'
+    : gm.connected
+      ? `✅ Connected${gm.email ? ` as <strong>${esc(gm.email)}</strong>` : ''}.`
+      : '⚠️ Not connected — connect the Gmail account that should send stream emails.'}</p>
+      <div class="btn-row">
+        <button class="btn" id="connectGmail" ${gm.configured ? '' : 'disabled'}>${gm.connected ? 'Reconnect Gmail' : 'Connect Gmail'}</button>
+        ${gm.connected ? '<button class="btn btn-danger" id="disconnectGmail">Disconnect</button>' : ''}
+      </div>
+      <!--<p class="hint muted">In Google Cloud Console, add redirect URI <code>http://localhost:15000/gmail/oauth2callback</code> (or your APP_BASE_URL + <code>/gmail/oauth2callback</code>). Enable the Gmail API for the project.</p>-->
+    </div>
+
+    <div class="card section">
+      <h2>Text messaging (ClickSend)</h2>
+      <p class="hint">Send stream watch links by SMS from the Streams page.</p>
+      <p>${cs.configured
+    ? '✅ ClickSend credentials are loaded.'
+    : '⚠️ Not configured — add <code>CLICKSEND_USERNAME</code> and <code>CLICKSEND_API_KEY</code> to the server <code>.env</code> (next to STREAM1 Server.exe or in your data folder), then reload environment or restart the server.'}</p>
+      <div class="field mt">
+        <label>Text messaging</label>
+        <div class="btn-row">
+          <button type="button" class="btn ${cs.enabled ? 'btn-danger' : 'btn-green'}" id="csToggle" ${cs.configured ? '' : 'disabled'}>
+            ${cs.enabled ? 'Turn text messaging OFF' : 'Turn text messaging ON'}
+          </button>
+          <span class="badge ${cs.enabled ? 'badge-on' : 'badge-off'}">${cs.enabled ? 'ON' : 'OFF'}</span>
+        </div>
+        <p class="hint">${cs.enabled
+    ? 'Staff see Share → Text on the Streams page.'
+    : 'Share → Text is hidden until you turn this on.'}</p>
+      </div>
+      <div class="btn-row">
+        <button type="button" class="btn btn-outline" id="csViewLogs">View text logs</button>
+      </div>
+      <!-- <p class="hint muted">Get your username and API key from the <a href="https://dashboard.clicksend.com/#/account/subaccount" target="_blank" rel="noopener">ClickSend dashboard → API Credentials</a>. Optional: set <code>CLICKSEND_FROM</code> for a custom sender ID (alpha tag or dedicated number).</p> -->
     </div>
 
     <div class="card section">
@@ -245,7 +276,7 @@ async function load(node, isAdmin) {
           <button type="button" class="btn ${rs.enabled ? 'btn-danger' : 'btn-green'}" id="rsToggle" ${rs.connected || rs.enabled ? '' : 'disabled'}>
             ${rs.enabled ? 'Turn Restream mode OFF' : 'Turn Restream mode ON'}
           </button>
-          <span class="badge ${rs.enabled ? 'badge-live' : 'badge-ended'}">${rs.enabled ? 'ON' : 'OFF'}</span>
+          <span class="badge ${rs.enabled ? 'badge-on' : 'badge-off'}">${rs.enabled ? 'ON' : 'OFF'}</span>
         </div>
         <p class="hint">${rs.enabled
           ? 'New streams go through Restream. Point ATEM at the Restream server + key below.'
@@ -258,21 +289,24 @@ async function load(node, isAdmin) {
         <p class="hint">Connect or remove destinations in the Restream dashboard. "Stream to" choices on New Stream turn these on/off per event.</p>
       </div>` : ''}
 
-      ${rs.connected ? `<div class="field">
+      ${rs.enabled && rs.connected ? `<div class="field">
         <label>Restream stream key (for ATEM)</label>
         <div id="rsStreamKeyPanel"></div>
+        <p class="hint">While Restream mode is ON, point ATEM at this server URL and stream key — not the YouTube key below.</p>
       </div>` : ''}
     </div>
 
-    <div class="card section">
-      <h2>Permanent stream key ${rs.enabled ? '<span class="badge badge-ended">Not used in Restream mode</span>' : ''}</h2>
+    <div class="card section${restreamActive ? ' card-inactive' : ''}">
+      <h2>Permanent stream key (YouTube) ${restreamActive ? '<span class="badge badge-ended">Restream is handling streaming</span>' : ''}</h2>
       <div id="streamKeyPanel">
-        ${yt.hasStream ? '' : '<p class="muted">No stream key yet.</p>'}
+        ${restreamActive
+    ? '<p class="muted">Restream is connected and handling the live feed to YouTube and Facebook. Use the Restream stream key above for ATEM.</p>'
+    : yt.hasStream ? '' : '<p class="muted">No stream key yet.</p>'}
       </div>
-      <p class="hint">${rs.enabled
-        ? 'Restream mode is ON — ATEM should use the Restream key above instead.'
+      <p class="hint">${restreamActive
+        ? 'YouTube still manages titles, privacy and playlists — but ATEM should not use this key while Restream is active.'
         : 'Recreating the key means you must re-enter it into ATEM once.'}</p>
-      <button class="btn btn-outline" id="recreate">Recreate stream key</button>
+      <button class="btn btn-outline" id="recreate" ${restreamActive ? 'disabled' : ''}>Recreate stream key</button>
     </div>
 
     ${embed ? `<div class="card section">
@@ -289,15 +323,18 @@ async function load(node, isAdmin) {
     </div>`;
 
   wireDetails(node);
+  wireHiddenStreams(node);
   wireYouTube(node, { allowDisconnect: true });
   wireFacebook(node, { allowDisconnect: true });
+  wireGmail(node);
+  wireClickSend(node, cs);
   wireRestream(node, rs);
-  wireStreamKey(node);
+  wireStreamKey(node, { restreamEnabled: restreamActive });
   wireUsers(node, users);
   wireHealthStatus(node, true);
 
   const streamPanel = node.querySelector('#streamKeyPanel');
-  if (yt.hasStream && streamPanel) mountProtectedStreamKey(streamPanel);
+  if (!restreamActive && yt.hasStream && streamPanel) mountProtectedStreamKey(streamPanel);
 
   const rsKeyPanel = node.querySelector('#rsStreamKeyPanel');
   if (rsKeyPanel) mountProtectedStreamKey(rsKeyPanel, { provider: 'restream' });
@@ -324,6 +361,58 @@ function timePresetRowHtml(label, time) {
     <input type="time" class="preset-time" value="${esc(time || '')}" />
     <button type="button" class="btn btn-sm btn-danger preset-del">×</button>
   </div>`;
+}
+
+function formatStreamWhen(row) {
+  const iso = row.actualStartTime || row.scheduledStartTime;
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+}
+
+function hiddenStreamRowHtml(stream) {
+  const when = formatStreamWhen(stream);
+  const meta = [stream.statusLabel, when, stream.templateName].filter(Boolean).join(' · ');
+  return `<div class="hidden-stream-row" data-id="${esc(stream.broadcastId)}">
+    <div class="hidden-stream-main">
+      <p class="hidden-stream-title">${esc(stream.title || '(untitled)')}</p>
+      <p class="hidden-stream-meta">${esc(meta || 'Hidden stream')}</p>
+    </div>
+    <button type="button" class="btn btn-sm btn-outline" data-unhide>Unhide</button>
+  </div>`;
+}
+
+async function wireHiddenStreams(node) {
+  const wrap = node.querySelector('#hiddenStreams');
+  if (!wrap) return;
+
+  const res = await api.get('/api/streams/hidden');
+  if (!res.ok) {
+    wrap.innerHTML = `<p class="muted">${esc(res.error || 'Could not load hidden streams.')}</p>`;
+    return;
+  }
+
+  const streams = res.data.streams || [];
+  if (!streams.length) {
+    wrap.innerHTML = '<p class="muted">No hidden streams.</p>';
+    return;
+  }
+
+  wrap.innerHTML = streams.map((stream) => hiddenStreamRowHtml(stream)).join('');
+  wrap.querySelectorAll('[data-unhide]').forEach((btn) => {
+    btn.onclick = async (e) => {
+      const row = e.target.closest('.hidden-stream-row');
+      const broadcastId = row && row.getAttribute('data-id');
+      if (!broadcastId) return;
+      busy(e.target, true, 'Unhide');
+      const result = await api.put(`/api/streams/${encodeURIComponent(broadcastId)}/hidden`, { hidden: false });
+      busy(e.target, false, 'Unhide');
+      if (!result.ok) return toast(result.error, 'err');
+      toast('Stream unhidden.', 'ok');
+      await wireHiddenStreams(node);
+    };
+  });
 }
 
 function wireDetails(node) {
@@ -400,6 +489,79 @@ function wireYouTube(node, { allowDisconnect = true } = {}) {
       load(node, isAdmin);
     };
   }
+}
+
+function wireGmail(node) {
+  const connect = node.querySelector('#connectGmail');
+  if (connect) {
+    connect.onclick = async (e) => {
+      const btn = e.target;
+      const label = btn.textContent.trim();
+      busy(btn, true, 'Waiting for sign-in…');
+      const result = await startGmailConnect({ returnTo: 'settings' });
+      busy(btn, false, label);
+      if (result.ok) {
+        toast(result.email ? `Connected as ${result.email}.` : 'Gmail connected.', 'ok');
+        const isAdmin = Boolean(node.querySelector('#saveSettings'));
+        load(node, isAdmin);
+        return;
+      }
+      toast(result.error || 'Could not start.', 'err');
+    };
+  }
+
+  const dis = node.querySelector('#disconnectGmail');
+  if (dis) {
+    dis.onclick = async () => {
+      const ok = await confirmDialog(
+        'Disconnect Gmail',
+        'STREAM1 will no longer be able to send stream links by email until you reconnect.',
+        { danger: true, confirmText: 'Disconnect' }
+      );
+      if (!ok) return;
+      const res = await api.post('/api/settings/gmail/disconnect');
+      if (!res.ok) return toast(res.error, 'err');
+      toast('Gmail disconnected.', 'ok');
+      const isAdmin = Boolean(node.querySelector('#saveSettings'));
+      load(node, isAdmin);
+    };
+  }
+}
+
+function wireClickSend(node, cs) {
+  const logsBtn = node.querySelector('#csViewLogs');
+  if (logsBtn) {
+    logsBtn.onclick = () => openSmsLogsModal();
+  }
+
+  const toggle = node.querySelector('#csToggle');
+  if (!toggle) return;
+
+  toggle.onclick = async (e) => {
+    const turningOn = !cs.enabled;
+    if (turningOn) {
+      const ok = await confirmDialog(
+        'Turn text messaging ON',
+        'Staff will see Share → Text on the Streams page. Each send delivers one SMS via ClickSend (standard rates apply).',
+        { confirmText: 'Turn ON' }
+      );
+      if (!ok) return;
+    } else {
+      const ok = await confirmDialog(
+        'Turn text messaging OFF',
+        'The Text button will be hidden from Share until you turn this back on.',
+        { danger: true, confirmText: 'Turn OFF' }
+      );
+      if (!ok) return;
+    }
+
+    busy(e.target, true);
+    const res = await api.put('/api/settings/clicksend/mode', { enabled: turningOn });
+    busy(e.target, false);
+    if (!res.ok) return toast(res.error, 'err');
+    toast(turningOn ? 'Text messaging is ON.' : 'Text messaging is OFF.', 'ok');
+    load(node, true);
+  };
 }
 
 function wireFacebook(node, { allowDisconnect = true } = {}) {
@@ -553,8 +715,10 @@ function wireRestream(node, rs) {
   }
 }
 
-function wireStreamKey(node) {
-  node.querySelector('#recreate').onclick = async (e) => {
+function wireStreamKey(node, { restreamEnabled = false } = {}) {
+  const btn = node.querySelector('#recreate');
+  if (!btn || restreamEnabled) return;
+  btn.onclick = async (e) => {
     const ok = await confirmDialog('Recreate stream key', 'This creates a NEW stream key. You must enter the new key into ATEM afterwards, or streaming will not work.', { danger: true, confirmText: 'Recreate' });
     if (!ok) return;
     busy(e.target, true);

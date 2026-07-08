@@ -1,18 +1,17 @@
-/** STREAM CONTROL side panel — ATEM / streamer tablet iframe (via LAN proxy). */
+/** STREAM CONTROL side panel — direct iframe to ATEM / Companion tablet URL. */
 
-import { lanProxyFrameSrc } from './lanProxyFrame.js';
+import { loadControlFrame, unloadControlFrame } from './lanProxyFrame.js';
+
+const FRAME_ID = 'streamControlFrame';
 
 let open = false;
-let iframeLoaded = false;
+let controlUrl = null;
 
 export function setStreamControlUrl(url) {
   if (!url || typeof url !== 'string') return;
-  const frame = document.getElementById('streamControlFrame');
-  if (frame && iframeLoaded) {
-    iframeLoaded = false;
-    frame.setAttribute('src', lanProxyFrameSrc('stream'));
-    iframeLoaded = true;
-  }
+  controlUrl = url;
+  if (open) loadStreamControlFrame();
+  else unloadStreamControlFrame();
 }
 
 export function initStreamControl() {
@@ -34,11 +33,12 @@ export function showStreamControlTab(visible) {
   if (!visible) closeStreamControl();
 }
 
-function ensureIframeLoaded() {
-  const frame = document.getElementById('streamControlFrame');
-  if (!frame || iframeLoaded) return;
-  frame.setAttribute('src', lanProxyFrameSrc('stream'));
-  iframeLoaded = true;
+function loadStreamControlFrame() {
+  loadControlFrame(FRAME_ID, controlUrl);
+}
+
+function unloadStreamControlFrame() {
+  unloadControlFrame(FRAME_ID);
 }
 
 function openStreamControl() {
@@ -48,7 +48,7 @@ function openStreamControl() {
 
   window.dispatchEvent(new Event('stream1-close-volume'));
 
-  ensureIframeLoaded();
+  loadStreamControlFrame();
   open = true;
   document.body.classList.add('stream-control-open');
   panel.setAttribute('aria-hidden', 'false');
@@ -61,6 +61,7 @@ function closeStreamControl() {
   const panel = document.getElementById('streamControlPanel');
   if (!tab || !panel) return;
 
+  unloadStreamControlFrame();
   open = false;
   document.body.classList.remove('stream-control-open');
   panel.setAttribute('aria-hidden', 'true');

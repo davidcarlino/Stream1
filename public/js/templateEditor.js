@@ -24,10 +24,18 @@ export async function openTemplateEditor({ template, settings, onSaved }) {
     playlistTitle: null,
     emailSubjectPattern: 'Stream link : {title}',
     emailBodyPattern: 'You can watch the live stream here:\n\n{link}\n',
+    smsBodyPattern: `{title}
+
+Here is the streaming link for {title}
+
+{link}
+
+Thank you,
+{church_name}`,
     extraFields: [],
   };
 
-  const shareChips = ['{title}', '{link}', '{template}']
+  const shareChips = ['{title}', '{event_name}', '{link}', '{template}', '{church_name}']
     .map((v) => `<span class="chip" data-var="${esc(v)}">${esc(v)}</span>`)
     .join('');
 
@@ -102,6 +110,19 @@ export async function openTemplateEditor({ template, settings, onSaved }) {
         <textarea id="emailBody" rows="4" placeholder="You can watch the live stream here:&#10;&#10;{link}">${esc(t.emailBodyPattern || 'You can watch the live stream here:\n\n{link}\n')}</textarea>
         <div class="chips" data-target="emailBody">${shareChips}</div>
         <p class="hint">Used when someone presses Share → Email. Placeholders: <code>{title}</code> stream name, <code>{link}</code> YouTube URL, <code>{template}</code> template name.</p>
+      </div>
+      <div class="field">
+        <label>Share text — message</label>
+        <textarea id="smsBody" rows="6" placeholder="{title}&#10;&#10;Here is the streaming link for {title}&#10;&#10;{link}&#10;&#10;Thank you,&#10;{church_name}">${esc(t.smsBodyPattern || `{title}
+
+Here is the streaming link for {title}
+
+{link}
+
+Thank you,
+{church_name}`)}</textarea>
+        <div class="chips" data-target="smsBody">${shareChips}</div>
+        <p class="hint">Used when someone presses Share → Text. Sends one SMS via ClickSend. Placeholders: <code>{title}</code> / <code>{event_name}</code>, <code>{link}</code>, <code>{church_name}</code> (from Settings → Church name).</p>
       </div>
       <div class="field">
         <label>Default cover image <span class="muted">(optional)</span></label>
@@ -246,6 +267,7 @@ export async function openTemplateEditor({ template, settings, onSaved }) {
         playlistTitle: selectedPlaylist.title,
         emailSubjectPattern: el.querySelector('#emailSubject').value.trim(),
         emailBodyPattern: el.querySelector('#emailBody').value,
+        smsBodyPattern: el.querySelector('#smsBody').value,
         extraFields,
       };
       if (!payload.name) return toast('Template needs a name.', 'err');

@@ -3,11 +3,12 @@ import { h, busy, toast } from '../ui.js';
 import { state, onAuthenticated } from '../app.js';
 import { setStreamControlUrl } from '../streamControl.js';
 import { setVolumeControlUrl } from '../volumeControl.js';
+import { registerElectronLanTrust } from '../lanProxyFrame.js';
 
 export function renderLogin({ firstRun }) {
   const node = h(`<div class="auth-wrap">
     <div class="auth-logo">
-      <img class="logo-on-light" src="/assets/img/logos/stream1-white.png" alt="STREAM1" />
+      <img src="/assets/img/logos/stream1-dark.svg" alt="STREAM1" />
     </div>
     <p class="auth-sub">${firstRun ? 'Welcome — create the first admin account.' : 'Please log in to continue.'}</p>
     <div class="card">
@@ -54,6 +55,10 @@ export function renderLogin({ firstRun }) {
     state.needsFirstUser = false;
     if (res.data.streamControlTabletUrl) setStreamControlUrl(res.data.streamControlTabletUrl);
     if (res.data.volumeControlUrl) setVolumeControlUrl(res.data.volumeControlUrl);
+    registerElectronLanTrust({
+      stream: res.data.streamControlTabletUrl,
+      volume: res.data.volumeControlUrl,
+    });
     await onAuthenticated();
   });
 

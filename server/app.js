@@ -27,6 +27,8 @@ const streamRoutes = require('./routes/streams');
 const healthRoutes = require('./routes/health');
 const qrRoutes = require('./routes/qr');
 const lanProxyRoutes = require('./routes/lanProxy');
+const emailRoutes = require('./routes/email');
+const smsRoutes = require('./routes/sms');
 
 const PUBLIC_DIR = path.resolve(__dirname, '..', 'public');
 
@@ -115,22 +117,33 @@ function buildApp() {
   // Security headers. CSP is tuned to allow our own assets plus embedded
   // YouTube players and thumbnails — nothing else loads third-party code.
   app.use(
-    helmet({
-      contentSecurityPolicy: {
-        directives: {
-          defaultSrc: ["'self'"],
-          scriptSrc: ["'self'"],
-          styleSrc: ["'self'", "'unsafe-inline'"],
-          imgSrc: ["'self'", 'data:', 'https://i.ytimg.com', 'https://yt3.ggpht.com'],
-          connectSrc: ["'self'"],
-          frameSrc: buildFrameSrcDirectives(),
-          objectSrc: ["'none'"],
-          baseUri: ["'self'"],
-          formAction: ["'self'"],
+    (req, res, next) => {
+      // LAN proxy serves third-party control UIs in iframes — skip STREAM1 CSP/frame rules.
+      if (req.path.startsWith('/api/lan-proxy')) return next();
+      return helmet({
+        contentSecurityPolicy: {
+          directives: {
+            defaultSrc: ["'self'"],
+            scriptSrc: ["'self'"],
+            styleSrc: ["'self'", "'unsafe-inline'"],
+            imgSrc: [
+              "'self'",
+              'data:',
+              'https://i.ytimg.com',
+              'https://*.ytimg.com',
+              'https://yt3.ggpht.com',
+              'https://*.ggpht.com',
+            ],
+            connectSrc: ["'self'"],
+            frameSrc: buildFrameSrcDirectives(),
+            objectSrc: ["'none'"],
+            baseUri: ["'self'"],
+            formAction: ["'self'"],
+          },
         },
-      },
-      crossOriginEmbedderPolicy: false,
-    })
+        crossOriginEmbedderPolicy: false,
+      })(req, res, next);
+    }
   );
 
   app.use(express.json({ limit: '3mb' }));
@@ -170,6 +183,9 @@ function buildApp() {
   // Restream OAuth redirect — must match the Restream app's Redirect URI.
   app.get('/restream/oauth2callback', setup.restreamOauthCallback);
 
+  // Gmail OAuth redirect — add this URI in Google Cloud Console for the app.
+  app.get('/gmail/oauth2callback', setup.gmailOauthCallback);
+
   // REST API
   app.use('/api/auth', authRoutes);
   app.use('/api/setup', setup.router);
@@ -177,6 +193,8 @@ function buildApp() {
   app.use('/api/playlists', playlistRoutes);
   app.use('/api/settings', settingsRoutes);
   app.use('/api/streams', streamRoutes);
+  app.use('/api/email', emailRoutes);
+  app.use('/api/sms', smsRoutes);
   app.use('/api/health', healthRoutes);
   app.use('/api/qr', qrRoutes);
   app.use('/api/lan-proxy', lanProxyRoutes);

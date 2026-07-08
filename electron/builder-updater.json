@@ -1,0 +1,47 @@
+{
+  "appId": "com.stream1.update",
+  "productName": "STREAM1 Update",
+  "copyright": "Copyright © 2026 David Carlino",
+  "compression": "maximum",
+  "electronLanguages": ["en-US"],
+  "npmRebuild": false,
+  "buildDependenciesFromSource": false,
+  "removePackageScripts": true,
+  "publish": null,
+  "directories": {
+    "output": "dist"
+  },
+  "extraMetadata": {
+    "main": "electron/updater/main.js",
+    "author": "David Carlino",
+    "description": "STREAM1 Update — installs downloaded STREAM1 releases"
+  },
+  "files": [
+    "electron/updater/**/*",
+    "electron/shared/**/*",
+    "public/assets/img/logos/STREAM1 ICON.png",
+    "package.json",
+    "!**/*.{map,md,ts}",
+    "!**/test/**",
+    "!**/__tests__/**"
+  ],
+  "win": {
+    "target": [
+      {
+        "target": "portable",
+        "arch": ["x64"]
+      }
+    ],
+    "icon": "public/assets/img/logos/STREAM1 ICON.png",
+    "legalTrademarks": "STREAM1",
+    "signAndEditExecutable": false,
+    "requestedExecutionLevel": "requireAdministrator",
+    "signtoolOptions": {
+      "publisherName": "David Carlino"
+    },
+    "artifactName": "STREAM1 Update.${ext}"
+  },
+  "portable": {
+    "artifactName": "STREAM1 Update.exe"
+  }
+}

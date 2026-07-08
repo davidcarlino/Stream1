@@ -2,6 +2,7 @@ import { api } from '../api.js';
 import { h, esc, busy, toast, copyToClipboard, mount } from '../ui.js';
 import { shareWatchBlock } from '../shareLink.js';
 import { openStreamEmail } from '../shareEmail.js';
+import { openStreamSms, isSmsShareAvailable } from '../shareSms.js';
 import { readImageFile, previewImageFile } from '../images.js';
 import { openTemplateEditor } from '../templateEditor.js';
 
@@ -183,7 +184,7 @@ function renderForm(node, template, templates, settings, isAdmin, ctx) {
         </div>
         <p class="hint">${restreamOn
           ? 'Restream sends the one ATEM feed to each ticked destination — titles are set automatically from this template.'
-          : 'Facebook simulcasts the YouTube feed to the connected page when you press Start stream (public/unlisted streams only).'}</p>
+          : 'Facebook simulcasts the YouTube feed to the connected page when the Streamer goes live (public/unlisted streams only).'}</p>
       </div>
     </div>
 
@@ -269,12 +270,13 @@ function renderForm(node, template, templates, settings, isAdmin, ctx) {
       toast(res.error, 'err');
       return;
     }
-    renderConfirm(node, res.data);
+    renderConfirm(node, res.data, settings);
   };
 }
 
-function renderConfirm(node, data) {
+function renderConfirm(node, data, settings = {}) {
   const url = data.watchUrl;
+  const smsOn = isSmsShareAvailable(settings.clicksend);
 
   // Restream mode: the YouTube link doesn't exist until Restream creates the
   // broadcast (when ATEM starts). Show clear instructions instead of a link.
@@ -302,6 +304,7 @@ function renderConfirm(node, data) {
     templateName: data.templateName,
     emailSubjectPattern: data.emailSubjectPattern,
     emailBodyPattern: data.emailBodyPattern,
+    smsBodyPattern: data.smsBodyPattern,
   };
   node.innerHTML = `
     <div class="confirm">
@@ -313,6 +316,7 @@ function renderConfirm(node, data) {
       ${shareWatchBlock(url)}
       <div class="btn-row mt" style="justify-content:center">
         <button type="button" class="btn btn-outline" id="emailShare">Email link</button>
+        ${smsOn ? '<button type="button" class="btn btn-outline" id="textShare">Text link</button>' : ''}
         <a class="btn btn-outline" href="${esc(url)}" target="_blank" rel="noopener">Open on YouTube</a>
         <button class="btn" id="another">Create another</button>
       </div>
@@ -322,5 +326,7 @@ function renderConfirm(node, data) {
     toast(ok ? 'Link copied.' : 'Select and copy manually.', ok ? 'ok' : 'err');
   };
   node.querySelector('#emailShare').onclick = () => openStreamEmail(shareStream);
+  const textShare = node.querySelector('#textShare');
+  if (textShare) textShare.onclick = () => openStreamSms(shareStream);
   node.querySelector('#another').onclick = () => renderNewStream().then((n) => mount(n));
 }

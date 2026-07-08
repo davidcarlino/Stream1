@@ -73,6 +73,25 @@ function platformLabel(streamingPlatformId) {
   return `platform_${streamingPlatformId}`;
 }
 
+/** Parse a YouTube video id from watch, embed, live, or youtu.be URLs. */
+function parseYouTubeVideoId(url) {
+  if (!url) return null;
+  try {
+    const u = new URL(String(url));
+    if (u.hostname.includes('youtu.be')) {
+      const id = u.pathname.replace(/^\//, '').split('/')[0];
+      return id || null;
+    }
+    const v = u.searchParams.get('v');
+    if (v) return v;
+    const m = u.pathname.match(/\/(?:embed|live|shorts|v)\/([^/?]+)/i);
+    if (m) return m[1];
+  } catch (err) {
+    /* ignore */
+  }
+  return null;
+}
+
 /** All destinations connected to the Restream account. */
 async function listChannels() {
   const data = await apiCall('GET', '/user/channel/all');
@@ -112,6 +131,60 @@ async function getStreamingStatus() {
   return { live: list.length > 0, events: list };
 }
 
+/**
+ * When Restream is live, resolve the YouTube video id for Stream Test preview.
+ * Uses the in-progress event's YouTube destination externalUrl, then title match
+ * against YouTube broadcasts as a fallback.
+ */
+async function resolveLivePreview(youtubeBroadcasts = []) {
+  const { live, events } = await getStreamingStatus();
+  if (!live || !events.length) return null;
+
+  const event = [...events].sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0))[0];
+  let videoId = null;
+  let watchUrl = null;
+
+  for (const dest of event.destinations || []) {
+    if (!YOUTUBE_PLATFORM_IDS.has(dest.streamingPlatformId)) continue;
+    const id = parseYouTubeVideoId(dest.externalUrl);
+    if (id) {
+      videoId = id;
+      watchUrl = dest.externalUrl || null;
+      break;
+    }
+  }
+
+  if (!videoId && youtubeBroadcasts.length) {
+    const title = String(event.title || '').trim().toLowerCase();
+    const match = youtubeBroadcasts.find((b) => {
+      const bt = ((b.snippet && b.snippet.title) || '').trim().toLowerCase();
+      return bt && bt === title;
+    });
+    if (match) {
+      videoId = match.id;
+      watchUrl = `https://www.youtube.com/watch?v=${match.id}`;
+    }
+  }
+
+  let lifeCycleStatus = 'live';
+  if (videoId) {
+    const broadcast = youtubeBroadcasts.find((b) => b.id === videoId);
+    if (broadcast && broadcast.status && broadcast.status.lifeCycleStatus) {
+      lifeCycleStatus = broadcast.status.lifeCycleStatus;
+    }
+  }
+
+  return {
+    live: true,
+    eventId: event.id,
+    title: event.title || 'Live stream',
+    youtubeVideoId: videoId,
+    watchUrl,
+    lifeCycleStatus,
+    coverUrl: event.coverUrl || null,
+  };
+}
+
 function isYouTubeChannel(channel) {
   return YOUTUBE_PLATFORM_IDS.has(channel.streamingPlatformId);
 }
@@ -127,6 +200,8 @@ module.exports = {
   setChannelActive,
   setChannelMeta,
   getStreamingStatus,
+  resolveLivePreview,
+  parseYouTubeVideoId,
   isYouTubeChannel,
   isFacebookChannel,
   DEFAULT_INGEST_URL,
