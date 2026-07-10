@@ -4,7 +4,8 @@ import { openTemplateEditor } from '../templateEditor.js';
 
 export async function renderTemplates() {
   const node = h('<div></div>');
-  await load(node);
+  // Return immediately so Templates appears on click while lists fetch.
+  void load(node);
   return node;
 }
 
@@ -31,11 +32,18 @@ async function load(node) {
     const presetsNote = (t.timePresets && t.timePresets.length)
       ? ` · ${t.timePresets.length} time${t.timePresets.length === 1 ? '' : 's'}`
       : '';
+    const customNote = [
+      t.allowCustomTitle ? 'custom title' : null,
+      t.allowCustomDescription ? 'custom description' : null,
+    ].filter(Boolean).join(' · ');
+    const patternLine = t.allowCustomTitle
+      ? 'Custom title each time'
+      : esc(t.titlePattern);
     const rowEl = h(`<div class="list-row">
       <div class="grow">
         <strong>${esc(t.name)}</strong>
-        <div class="muted" style="font-size:0.9rem">${esc(t.titlePattern)}</div>
-        <div class="muted" style="font-size:0.85rem">${esc(t.defaultPrivacy)}${t.playlistTitle ? ` · Playlist: ${esc(t.playlistTitle)}` : ' · no playlist'}${timeNote}${presetsNote}${t.hasCoverImage ? ' · cover set' : ''}</div>
+        <div class="muted" style="font-size:0.9rem">${patternLine}</div>
+        <div class="muted" style="font-size:0.85rem">${esc(t.defaultPrivacy)}${t.playlistTitle ? ` · Playlist: ${esc(t.playlistTitle)}` : ' · no playlist'}${timeNote}${presetsNote}${t.hasCoverImage ? ' · cover set' : ''}${customNote ? ` · ${esc(customNote)}` : ''}</div>
       </div>
       <button class="btn btn-sm btn-outline" data-act="edit">Edit</button>
       <button class="btn btn-sm btn-danger" data-act="del">Delete</button>

@@ -38,7 +38,7 @@ function buildVars(settings, form) {
   v.date = formatDate(form.date, settings.dateFormat);
   v.time = formatTime(form.time);
   for (const [k, val] of Object.entries(form)) {
-    if (k === 'date' || k === 'time') continue;
+    if (k === 'date' || k === 'time' || k === 'customTitle' || k === 'customDescription') continue;
     if (val) v[k] = String(val);
   }
   return v;
@@ -49,24 +49,32 @@ function subst(pattern, vars) {
 
 export async function renderNewStream(ctx = {}) {
   const isAdmin = ctx.state && ctx.state.user && ctx.state.user.role === 'admin';
-  const [tplRes, setRes] = await Promise.all([api.get('/api/templates'), api.get('/api/settings')]);
-  const templates = (tplRes.ok && tplRes.data.templates) || [];
-  const settings = (setRes.ok && setRes.data.settings) || {};
+  const node = h(`<div>
+    <h1>New Stream</h1>
+    <p class="subtitle muted">Loading templates…</p>
+  </div>`);
 
-  const node = h('<div></div>');
+  // Return shell immediately so nav clicks never wait on templates/settings.
+  void (async () => {
+    const [tplRes, setRes] = await Promise.all([api.get('/api/templates'), api.get('/api/settings')]);
+    if (!node.isConnected) return;
+    const templates = (tplRes.ok && tplRes.data.templates) || [];
+    const settings = (setRes.ok && setRes.data.settings) || {};
 
-  if (templates.length === 0) {
-    node.innerHTML = `<div class="card center">
-      <h2>No templates yet</h2>
-      <p class="muted">${isAdmin
-        ? 'Create a template first to start a stream.'
-        : 'An administrator needs to create stream templates before you can start a stream.'}</p>
-      ${isAdmin ? '<a class="btn mt" href="#/templates">Go to Templates</a>' : ''}
-    </div>`;
-    return node;
-  }
+    if (templates.length === 0) {
+      node.innerHTML = `<div class="card center">
+        <h2>No templates yet</h2>
+        <p class="muted">${isAdmin
+          ? 'Create a template first to start a stream.'
+          : 'An administrator needs to create stream templates before you can start a stream.'}</p>
+        ${isAdmin ? '<a class="btn mt" href="#/templates">Go to Templates</a>' : ''}
+      </div>`;
+      return;
+    }
 
-  renderPicker(node, templates, settings, isAdmin, ctx);
+    renderPicker(node, templates, settings, isAdmin, ctx);
+  })();
+
   return node;
 }
 
@@ -126,6 +134,8 @@ function templateTimePresets(template, settings) {
 
 function renderForm(node, template, templates, settings, isAdmin, ctx) {
   const restreamOn = Boolean(settings.restream && settings.restream.enabled);
+  const allowCustomTitle = Boolean(template.allowCustomTitle);
+  const allowCustomDescription = Boolean(template.allowCustomDescription);
   const extra = template.extraFields || [];
   const extraHtml = extra
     .map(
@@ -136,11 +146,30 @@ function renderForm(node, template, templates, settings, isAdmin, ctx) {
     )
     .join('');
 
+  const customTitleHtml = allowCustomTitle
+    ? `<div class="field">
+        <label for="customTitle">Title *</label>
+        <input type="text" id="customTitle" placeholder="e.g. Wedding of Jane &amp; John — 12 July" />
+        <p class="hint">This template uses a custom title instead of the usual pattern.</p>
+      </div>`
+    : '';
+
+  const customDescHtml = allowCustomDescription
+    ? `<div class="field">
+        <label for="customDescription">Description *</label>
+        <textarea id="customDescription" rows="5" placeholder="Write the YouTube description for this stream…"></textarea>
+        <p class="hint">This template uses a custom description instead of the usual pattern.</p>
+      </div>`
+    : '';
+
   node.innerHTML = `
     <button class="btn btn-sm btn-outline mb" id="back">← Back</button>
     <h1>${esc(template.name)}</h1>
-    ${restreamOn ? '<p class="hint mb">Restream mode is ON — this stream is sent through Restream to the destinations you tick below.</p>' : ''}
+    ${restreamOn ? `<p class="hint mb">Restream mode is ON — this stream is sent through Restream to the destinations you tick below.
+      <strong>YouTube in STREAM1 Settings must be the same channel Restream streams to</strong>, or Create Stream will be blocked (privacy/title updates would fail).</p>` : ''}
     <div class="card">
+      ${customTitleHtml}
+      ${customDescHtml}
       <div class="grid grid-2">
         <div class="field">
           <label for="date">Date</label>
@@ -178,13 +207,11 @@ function renderForm(node, template, templates, settings, isAdmin, ctx) {
           <label class="stream-to-option">
             <input type="checkbox" id="streamToYoutube" ${(template.streamTo && template.streamTo.youtube) !== false ? 'checked' : ''} /> YouTube
           </label>
-          <label class="stream-to-option">
-            <input type="checkbox" id="streamToFacebook" ${template.streamTo && template.streamTo.facebook ? 'checked' : ''} /> Facebook
+          <label class="stream-to-option" id="streamToFacebookWrap">
+            <input type="checkbox" id="streamToFacebook" ${template.streamTo && template.streamTo.facebook && template.defaultPrivacy === 'public' ? 'checked' : ''} /> Facebook
           </label>
         </div>
-        <p class="hint">${restreamOn
-          ? 'Restream sends the one ATEM feed to each ticked destination — titles are set automatically from this template.'
-          : 'Facebook simulcasts the YouTube feed to the connected page when the Streamer goes live (public/unlisted streams only).'}</p>
+        <p class="hint" id="streamToHint"></p>
       </div>
     </div>
 
@@ -198,22 +225,55 @@ function renderForm(node, template, templates, settings, isAdmin, ctx) {
 
   let privacy = template.defaultPrivacy;
 
+  const fbCheckbox = node.querySelector('#streamToFacebook');
+  const streamToHint = node.querySelector('#streamToHint');
+  const syncFacebookGate = () => {
+    const allowFb = privacy === 'public';
+    fbCheckbox.disabled = !allowFb;
+    if (!allowFb) fbCheckbox.checked = false;
+    node.querySelector('#streamToFacebookWrap').classList.toggle('is-disabled', !allowFb);
+    if (!allowFb) {
+      streamToHint.textContent =
+        'Facebook is only available when Privacy is Public. Unlisted and Private stay YouTube-only (all Restream Facebook channels stay off).';
+    } else if (restreamOn) {
+      streamToHint.textContent =
+        'Public + Facebook ticked: Restream posts the event name as the live title on every Facebook destination, with the ATEM video feed. YouTube gets the same title and privacy.';
+    } else {
+      streamToHint.textContent =
+        'Public + Facebook ticked: simulcasts the YouTube feed to the connected Facebook page when the Streamer goes live.';
+    }
+  };
+  syncFacebookGate();
+
   const getForm = () => {
     const form = {
       date: node.querySelector('#date').value,
       time: node.querySelector('#time').value,
     };
     node.querySelectorAll('[data-key]').forEach((inp) => { form[inp.getAttribute('data-key')] = inp.value.trim(); });
+    if (allowCustomTitle) {
+      form.customTitle = (node.querySelector('#customTitle').value || '').trim();
+    }
+    if (allowCustomDescription) {
+      form.customDescription = node.querySelector('#customDescription').value || '';
+    }
     return form;
   };
 
   const updatePreview = () => {
-    const vars = buildVars(settings, getForm());
-    node.querySelector('#pvTitle').textContent = subst(template.titlePattern, vars);
-    node.querySelector('#pvDesc').textContent = subst(template.descriptionPattern, vars);
+    const form = getForm();
+    const vars = buildVars(settings, form);
+    node.querySelector('#pvTitle').textContent = allowCustomTitle
+      ? (form.customTitle || '—')
+      : subst(template.titlePattern, vars);
+    node.querySelector('#pvDesc').textContent = allowCustomDescription
+      ? (form.customDescription || '—')
+      : subst(template.descriptionPattern, vars);
   };
 
-  node.querySelectorAll('#date, #time, [data-key]').forEach((inp) => inp.addEventListener('input', updatePreview));
+  node.querySelectorAll('#date, #time, [data-key], #customTitle, #customDescription').forEach((inp) => {
+    if (inp) inp.addEventListener('input', updatePreview);
+  });
   const timeInput = node.querySelector('#time');
   node.querySelectorAll('#timePresets .chip').forEach((chip) => {
     chip.onclick = () => {
@@ -225,6 +285,7 @@ function renderForm(node, template, templates, settings, isAdmin, ctx) {
     b.onclick = () => {
       privacy = b.getAttribute('data-p');
       node.querySelectorAll('#privacy button').forEach((x) => x.classList.toggle('active', x === b));
+      syncFacebookGate();
     };
   });
   node.querySelector('#back').onclick = () => renderPicker(node, templates, settings, isAdmin, ctx);
@@ -243,13 +304,19 @@ function renderForm(node, template, templates, settings, isAdmin, ctx) {
         return toast(`Please fill in "${f.label}".`, 'err');
       }
     }
+    if (allowCustomTitle && !(node.querySelector('#customTitle').value || '').trim()) {
+      return toast('Please enter a custom title.', 'err');
+    }
+    if (allowCustomDescription && !(node.querySelector('#customDescription').value || '').trim()) {
+      return toast('Please enter a custom description.', 'err');
+    }
     busy(e.target, true);
     const payload = {
       templateId: template.id,
       privacy,
       streamTo: {
         youtube: node.querySelector('#streamToYoutube').checked,
-        facebook: node.querySelector('#streamToFacebook').checked,
+        facebook: privacy === 'public' && fbCheckbox.checked,
       },
       form: getForm(),
     };

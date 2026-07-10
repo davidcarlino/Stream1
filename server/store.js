@@ -56,6 +56,16 @@ const DEFAULT_SETTINGS = {
     channels: [], // cached [{ id, platform, displayName, url, active }]
     channelsRefreshedAt: null,
     ingestUrl: 'rtmp://live.restream.io/live',
+    // Schedule-aware arming: which pending local stream owns the next ATEM go-live.
+    armedStreamId: null,
+    armedAt: null,
+    armedTitle: null,
+    // Armed stream id that owned the last Restream live session (cleared when settled).
+    lastLiveArmedStreamId: null,
+    // YouTube broadcast ids that have ended — never link/reuse these again.
+    retiredBroadcastIds: [],
+    // Facebook live video ids that have ended — never treat as the current live again.
+    retiredFacebookLiveIds: [],
   },
   gmail: {
     email: null,
@@ -483,7 +493,11 @@ async function updateStreamById(id, patch, unsetFields) {
 async function listRestreamPendingStreams() {
   const docs = await getDb()
     .collection('streams')
-    .find({ viaRestream: true, restreamPending: true })
+    .find({
+      viaRestream: true,
+      restreamPending: true,
+      $or: [{ endedAt: { $exists: false } }, { endedAt: null }],
+    })
     .sort({ createdAt: -1 })
     .toArray();
   return docs.map(serializeStream);

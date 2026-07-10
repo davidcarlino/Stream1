@@ -8,11 +8,16 @@ import { openSmsLogsModal } from '../smsLogs.js';
 import { mountProtectedStreamKey, showRevealedStreamKey } from '../streamKeyReveal.js';
 import { refreshHealth } from '../health.js';
 import { healthState } from '../healthState.js';
+import {
+  websiteEmbedSnippet,
+  canBuildWebsiteEmbed,
+} from '../websiteEmbedSnippet.js';
 
 export async function renderSettings(ctx = {}) {
   const isAdmin = ctx.state && ctx.state.user && ctx.state.user.role === 'admin';
-  const node = h('<div></div>');
-  await load(node, isAdmin);
+  const node = h('<div><p class="muted">Loading…</p></div>');
+  // Return immediately so Settings appears on click while settings fetch.
+  void load(node, isAdmin);
   return node;
 }
 
@@ -124,10 +129,7 @@ async function load(node, isAdmin) {
     .map((p) => timePresetRowHtml(p.label, p.time))
     .join('');
 
-  const embed = yt.playlists && yt.playlists.sunday
-    ? `https://www.youtube.com/embed/videoseries?list=${esc(yt.playlists.sunday.id)}`
-    : '';
-
+  // Channel id drives the public /embed widget (live + latest list).
   const restreamActive = Boolean(rs.enabled && rs.connected);
 
   node.innerHTML = `
@@ -181,10 +183,14 @@ async function load(node, isAdmin) {
       </div>
     </div>
 
-    <div class="card section">
-      <h2>Facebook connection</h2>
-      <p>${fb.connected ? '✅ Connected.' : '⚠️ Not connected — sign in with the account that manages the church Facebook page.'}</p>
-      ${fb.connected && (fb.pages || []).length
+    <div class="card section${restreamActive ? ' card-inactive' : ''}">
+      <h2>Facebook connection ${restreamActive ? '<span class="badge badge-ended">Restream is handling streaming</span>' : ''}</h2>
+      <p>${restreamActive
+        ? 'Restream is connected and handling the live feed to Facebook. Manage Facebook destinations in the Restream card above.'
+        : fb.connected
+          ? '✅ Connected.'
+          : '⚠️ Not connected — sign in with the account that manages the church Facebook page.'}</p>
+      ${!restreamActive && fb.connected && (fb.pages || []).length
         ? `<div class="field">
             <label>Stream to page</label>
             <select id="fbPage">
@@ -194,14 +200,16 @@ async function load(node, isAdmin) {
             </select>
             <p class="hint">Live streams marked "Facebook" are posted to this page.</p>
           </div>`
-        : fb.connected
+        : !restreamActive && fb.connected
           ? '<p class="hint">No pages found on this account — the account must manage the church Facebook page.</p>'
           : ''}
       <div class="btn-row">
-        <button class="btn" id="connectFb">${fb.connected ? 'Reconnect' : 'Connect Facebook'}</button>
-        ${fb.connected ? '<button class="btn btn-danger" id="disconnectFb">Disconnect</button>' : ''}
+        <button class="btn" id="connectFb" ${restreamActive ? 'disabled' : ''}>${fb.connected ? 'Reconnect' : 'Connect Facebook'}</button>
+        ${fb.connected ? `<button class="btn btn-danger" id="disconnectFb" ${restreamActive ? 'disabled' : ''}>Disconnect</button>` : ''}
       </div>
-      <p class="hint muted">Requires Facebook App Created.</p>
+      <p class="hint muted">${restreamActive
+        ? 'Direct Facebook connection is unused while Restream mode is ON.'
+        : 'Requires Facebook App Created.'}</p>
     </div>
 
     <div class="card section">
@@ -246,9 +254,9 @@ async function load(node, isAdmin) {
 
     <div class="card section">
       <h2>Restream</h2>
-      <p class="hint">Restream takes the single ATEM feed and sends it to YouTube and Facebook itself.
-      When Restream mode is ON, streams are created through Restream and the direct YouTube/Facebook
-      streaming paths are turned off (YouTube stays connected for playlists, thumbnails and privacy).</p>
+      <p class="hint">Restream takes the single ATEM feed and sends it to multiple streaming platforms.
+      When Restream mode is ON, streams are created through Restream.
+      When Restream mode is OFF, streaming paths are turned off (YouTube stays connected for playlists, thumbnails and privacy). You will need to use the above seperate cards per stream.</p>
 
       <div class="field">
         <label>Restream app credentials <span class="muted">— from developers.restream.io</span></label>
@@ -260,6 +268,7 @@ async function load(node, isAdmin) {
         <p class="hint">${rs.configured
           ? '✅ App credentials are saved.'
           : 'Create an app at developers.restream.io, add redirect URI <code>http://localhost:15000/restream/oauth2callback</code>, then paste the Client ID and Secret here.'}</p>
+        <a href="https://developers.restream.io/apps/" target="_blank" rel="noopener" class="btn btn-sm btn-grey" style="margin-top:4px; display:inline-block;">Manage developer applications</a>
       </div>
 
       <p>${rs.connected
@@ -269,6 +278,7 @@ async function load(node, isAdmin) {
         <button class="btn" id="connectRs" ${rs.configured ? '' : 'disabled'}>${rs.connected ? 'Reconnect Restream' : 'Connect Restream'}</button>
         ${rs.connected ? '<button class="btn btn-danger" id="disconnectRs">Disconnect</button>' : ''}
       </div>
+      <p class="hint">STREAM1 pushes the event name to Restream’s YouTube/Facebook destination titles. Restream’s Autodetect banner (“Stream via RTMP…”) is Restream’s own encoder label and is not writable via their public API while using the permanent RTMP key.</p>
 
       <div class="field mt">
         <label>Restream mode</label>
@@ -286,7 +296,12 @@ async function load(node, isAdmin) {
       ${rs.connected ? `<div class="field">
         <label>Destinations in Restream <button type="button" class="btn btn-sm btn-outline" id="rsRefreshCh">Refresh</button></label>
         <div id="rsChannels">${restreamChannelsHtml(rs.channels)}</div>
-        <p class="hint">Connect or remove destinations in the Restream dashboard. "Stream to" choices on New Stream turn these on/off per event.</p>
+        <div class="center mt">
+          <a href="https://app.restream.io/channels" target="_blank" rel="noopener" class="btn">Manage Destinations in Restream</a>
+        </div>
+        <p class="hint">Keep ONE Restream stream key in ATEM forever. Each New Stream (Wedding, Funeral, etc.) only changes the title Restream sends — Restream should create a <strong>new</strong> YouTube video when you go live.</p>
+        <p class="hint">If you create 3pm and 8pm events, ATEM going live at 2:45pm arms the <strong>3pm</strong> template (not 8pm). After a live ends, that YouTube video is retired and will never be reused. The same applies to Facebook when it is ticked — leftover Facebook lives are ended so each go-live gets a <strong>new</strong> Facebook live.</p>
+        <p class="hint">If every go-live lands on the same YouTube video, your Restream destination is probably <strong>YouTube Stream Now</strong>. In the Restream dashboard, remove it and add <strong>YouTube Events</strong> instead, then Refresh here. Also fully stop ATEM between services so the previous live can end.</p>
       </div>` : ''}
 
       ${rs.enabled && rs.connected ? `<div class="field">
@@ -309,12 +324,7 @@ async function load(node, isAdmin) {
       <button class="btn btn-outline" id="recreate" ${restreamActive ? 'disabled' : ''}>Recreate stream key</button>
     </div>
 
-    ${embed ? `<div class="card section">
-      <h2>Website embed</h2>
-      <p class="muted">Paste this into the church website once — it always shows the latest Sunday service.</p>
-      <div class="readonly-box"><code>${esc(`<iframe width="560" height="315" src="${embed}" frameborder="0" allowfullscreen></iframe>`)}</code>
-      <button class="btn btn-sm" data-copy='${esc(`<iframe width="560" height="315" src="${embed}" frameborder="0" allowfullscreen></iframe>`)}'>Copy</button></div>
-    </div>` : ''}
+    ${websiteEmbedCardHtml(yt)}
 
     <div class="card section">
       <h2>Staff logins</h2>
@@ -345,6 +355,93 @@ async function load(node, isAdmin) {
       toast(ok ? 'Copied.' : 'Copy manually.', ok ? 'ok' : 'err');
     };
   });
+
+  wireWebsiteEmbed(node, yt);
+}
+
+function websiteEmbedCardHtml(yt) {
+  if (!yt.channelId && !yt.connected) return '';
+
+  const ready = canBuildWebsiteEmbed({
+    channelId: yt.channelId,
+    apiKey: yt.embedApiKey,
+  });
+
+  const previewBlock = ready
+    ? `<div class="embed-preview mt">
+        <iframe id="websiteEmbedPreview" title="Website embed preview" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>
+      </div>`
+    : '';
+
+  let body;
+  if (!yt.channelId) {
+    body = '<p class="muted">Reconnect YouTube so STREAM1 can read the channel ID and build the embed.</p>';
+  } else if (!yt.embedApiKey) {
+    body = `<p class="muted">Add a YouTube Data API key to <code>.env</code> as <code>YOUTUBE_API_KEY=…</code>, then restart STREAM1, to unlock the public website copy code.</p>
+      <p class="hint">Create it in Google Cloud → Credentials → API key. Restrict to YouTube Data API v3 and your church website domain (HTTP referrers). Also add <code>http://localhost:15000/*</code> so Settings preview works.</p>`;
+  } else if (ready) {
+    const snippet = websiteEmbedSnippet({
+      channelId: yt.channelId,
+      apiKey: yt.embedApiKey,
+    });
+    body = `<p class="muted">Paste this into the public church website once. Live on the left (or black box + Refresh), latest lives on the right (newest first) for <strong>${esc(yt.channelTitle || yt.channelId)}</strong>.</p>
+      <div class="embed-code-panel">
+        <div class="embed-code-box" id="websiteEmbedCodeBox">
+          <pre class="embed-code" id="websiteEmbedCode">${esc(snippet)}</pre>
+          <button type="button" class="embed-code-toggle" id="toggleWebsiteEmbedCode" aria-expanded="false" aria-controls="websiteEmbedCode">
+            <span class="embed-code-fade" aria-hidden="true"></span>
+            <span class="embed-code-toggle-label">
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6z"/></svg>
+              View full code
+            </span>
+          </button>
+        </div>
+        <button type="button" class="btn mt" id="copyWebsiteEmbed">Copy Embed Code</button>
+      </div>
+      ${previewBlock}
+      <p class="hint">Same YouTube-direct embed as the public site. If Settings preview is blank, add <code>http://localhost:15000/*</code> to the API key HTTP referrers in Google Cloud.</p>`;
+  } else {
+    body = '<p class="muted">Could not build the embed — reconnect YouTube and check YOUTUBE_API_KEY.</p>';
+  }
+
+  return `<div class="card section">
+      <h2>Website embed</h2>
+      ${body}
+    </div>`;
+}
+
+function wireWebsiteEmbed(node, yt) {
+  const copyEmbed = node.querySelector('#copyWebsiteEmbed');
+  if (copyEmbed && yt.channelId && yt.embedApiKey) {
+    copyEmbed.onclick = async () => {
+      const ok = await copyToClipboard(
+        websiteEmbedSnippet({ channelId: yt.channelId, apiKey: yt.embedApiKey })
+      );
+      toast(ok ? 'Copied.' : 'Copy manually.', ok ? 'ok' : 'err');
+    };
+  }
+
+  const codeBox = node.querySelector('#websiteEmbedCodeBox');
+  const toggle = node.querySelector('#toggleWebsiteEmbedCode');
+  if (codeBox && toggle) {
+    toggle.onclick = () => {
+      const open = codeBox.classList.toggle('is-expanded');
+      toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      const label = toggle.querySelector('.embed-code-toggle-label');
+      if (label) {
+        label.innerHTML = open
+          ? `<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M7.41 15.41L12 10.83l4.59 4.58L18 14l-6-6-6 6z"/></svg> Hide code`
+          : `<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6z"/></svg> View full code`;
+      }
+    };
+  }
+
+  const preview = node.querySelector('#websiteEmbedPreview');
+  if (preview && yt.channelId && yt.embedApiKey) {
+    // Same YouTube-direct widget as Copy, served from localhost so the API key
+    // HTTP referrer (http://localhost:15000/*) matches Settings preview.
+    preview.src = `/embed/preview?t=${Date.now()}`;
+  }
 }
 
 function variableRowHtml(k, v) {
@@ -402,12 +499,15 @@ async function wireHiddenStreams(node) {
   wrap.innerHTML = streams.map((stream) => hiddenStreamRowHtml(stream)).join('');
   wrap.querySelectorAll('[data-unhide]').forEach((btn) => {
     btn.onclick = async (e) => {
-      const row = e.target.closest('.hidden-stream-row');
+      // Defensive closest in case e.target is a text node inside the button
+      let t = e.target;
+      if (t && t.nodeType === 3) t = t.parentNode;
+      const row = (t && t.closest) ? t.closest('.hidden-stream-row') : null;
       const broadcastId = row && row.getAttribute('data-id');
       if (!broadcastId) return;
-      busy(e.target, true, 'Unhide');
+      busy(btn, true, 'Unhide');  // use the button we attached to, not e.target
       const result = await api.put(`/api/streams/${encodeURIComponent(broadcastId)}/hidden`, { hidden: false });
-      busy(e.target, false, 'Unhide');
+      busy(btn, false, 'Unhide');
       if (!result.ok) return toast(result.error, 'err');
       toast('Stream unhidden.', 'ok');
       await wireHiddenStreams(node);
@@ -611,15 +711,33 @@ function restreamChannelsHtml(channels) {
   if (managed.length === 0) {
     return '<p class="muted">No YouTube or Facebook destinations found. Add them in the Restream dashboard, then refresh.</p>';
   }
+
+  const ytIcon = `<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="#ff0000" d="M19.615 3.184c-3.604-.246-11.631-.245-15.23 0-3.897.266-4.356 2.62-4.385 8.816.029 6.185.484 8.549 4.385 8.816 3.6.245 11.626.246 15.23 0 3.897-.266 4.356-2.62 4.385-8.816-.029-6.185-.484-8.549-4.385-8.816zm-10.615 12.816v-8l6.425 4-6.425 4z"/></svg>`;
+  const fbIcon = `<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="#1877f2" d="M18 2h-3a5 5 0 00-5 5v3H7v4h3v8h4v-8h3l1-4h-4V7a1 1 0 011-1h3z"/></svg>`;
+
   return managed
-    .map(
-      (c) => `<div class="list-row">
-        <div class="grow"><strong>${esc(c.displayName || c.platform)}</strong>
-          <span class="badge ${c.platform === 'youtube' ? 'badge-live' : 'badge-upcoming'}">${esc(c.platform)}</span>
+    .map((c) => {
+      const isYt = c.platform === 'youtube';
+      const icon = isYt ? ytIcon : fbIcon;
+      const label = isYt ? 'YouTube' : 'Facebook';
+      const name = c.displayName ? `<span class="dest-name">${esc(c.displayName)}</span>` : '';
+      // Some responses use "active", the list endpoint uses "enabled".
+      const effActive = c.active !== undefined ? !!c.active : !!c.enabled;
+      const toggleClass = effActive ? 'btn-green' : 'btn-outline';
+      const toggleLabel = effActive ? 'ON' : 'OFF';
+      const kindBadge = isYt && c.youtubeKind === 'stream_now'
+        ? '<span class="badge badge-warn" title="Often reuses the same YouTube video">Stream Now — wrong for church events</span>'
+        : isYt && c.youtubeKind === 'events'
+          ? '<span class="badge badge-public" title="Creates a new YouTube video each go-live">Events — new video each time</span>'
+          : '';
+      return `<div class="list-row">
+        <div class="grow">
+          <span class="platform-pill">${icon}<span>${label}</span></span>${name}
+          ${kindBadge}
         </div>
-        <span class="badge ${c.active ? 'badge-public' : 'badge-ended'}">${c.active ? 'Enabled' : 'Disabled'}</span>
-      </div>`
-    )
+        <button type="button" class="btn btn-sm ${toggleClass}" data-channel-toggle data-id="${esc(c.id)}" data-active="${effActive}">${toggleLabel}</button>
+      </div>`;
+    })
     .join('');
 }
 
@@ -708,10 +826,64 @@ function wireRestream(node, rs) {
       const res = await api.post('/api/settings/restream/channels/refresh');
       busy(e.target, false, 'Refresh');
       if (!res.ok) return toast(res.error, 'err');
+      const chs = res.data && res.data.channels;
+      console.log('[restream channels refresh] raw channels from server:', chs);
+      if (Array.isArray(chs)) {
+        chs.forEach((c, i) => console.log('  ch['+i+'] id=', c && c.id, 'platform=', c && c.platform, 'active=', c && c.active, 'display=', c && c.displayName));
+      }
       const wrap = node.querySelector('#rsChannels');
-      if (wrap) wrap.innerHTML = restreamChannelsHtml(res.data.channels);
+      if (wrap) wrap.innerHTML = restreamChannelsHtml(chs);
       toast('Destinations refreshed.', 'ok');
     };
+  }
+
+  // Delegated handler for per-destination ON/OFF toggles.
+  // Uses event delegation so it survives innerHTML replacement after toggle/refresh.
+  const chWrap = node.querySelector('#rsChannels');
+  if (chWrap && !chWrap._wiredChannelToggles) {
+    chWrap._wiredChannelToggles = true;
+    chWrap.addEventListener('click', async (e) => {
+      // Defensive: e.target can be a text node when clicking button label text.
+      let target = e.target;
+      if (target && target.nodeType === 3) target = target.parentNode;
+      const btn = (target && target.closest) ? target.closest('[data-channel-toggle]') : null;
+      if (!btn) return;
+      const id = btn.getAttribute('data-id');
+      const currentlyActive = btn.getAttribute('data-active') === 'true';
+      const nextActive = !currentlyActive;
+      const originalText = btn.textContent;
+      const originalClass = btn.className;
+
+      // Optimistic flip: make it look ON/OFF immediately for responsive feel.
+      btn.setAttribute('data-active', String(nextActive));
+      btn.textContent = nextActive ? 'ON' : 'OFF';
+      btn.className = `btn btn-sm ${nextActive ? 'btn-green' : 'btn-outline'}`;
+
+      busy(btn, true);
+      const res = await api.put(`/api/settings/restream/channel/${encodeURIComponent(id)}/active`, { active: nextActive });
+      // On success we don't pass the old originalText — busy(false) will restore the optimistic label
+      // we set just before busy(true) (via dataset.label). The container is replaced immediately after anyway.
+      busy(btn, false);
+      // Extra visibility in browser console while debugging the toggle.
+      const returnedCh = (res.data && res.data.channels || []).find((c) => String(c && c.id) === String(id));
+      console.log('[restream toggle] id=', id, 'sentActive=', nextActive, 'returnedActive=', returnedCh ? returnedCh.active : 'not-in-response', 'fullChannels=', res.data && res.data.channels);
+      if (!res.ok) {
+        // Revert optimistic change on failure
+        btn.setAttribute('data-active', String(currentlyActive));
+        btn.textContent = originalText;
+        btn.className = originalClass;
+        toast(res.error || 'Could not update destination.', 'err');
+        return;
+      }
+      // Use the server list, but locally force the state we just commanded for this id.
+      // (The list response can still contain stale "active"/"enabled" until listChannels fully enriches.)
+      let channelsToRender = (res.data && res.data.channels) || [];
+      channelsToRender = channelsToRender.map((c) =>
+        c && String(c.id) === String(id) ? { ...c, active: nextActive, enabled: nextActive } : c
+      );
+      chWrap.innerHTML = restreamChannelsHtml(channelsToRender);
+      toast(nextActive ? 'Destination turned ON.' : 'Destination turned OFF.', 'ok');
+    });
   }
 }
 

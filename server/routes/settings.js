@@ -59,10 +59,13 @@ function publicSettings(settings) {
     timePresets: settings.timePresets || [],
     youtube: {
       connected: false, // filled by caller
+      channelId: yt.channelId || null,
       channelTitle: yt.channelTitle || null,
       connectedAt: yt.connectedAt || null,
       playlists: yt.playlists || {},
       hasStream: Boolean(yt.streamId),
+      // Public website embed talks to YouTube directly (not localhost STREAM1).
+      embedApiKey: config.google.youtubeApiKey || null,
     },
     facebook: {
       connected: false, // filled by caller
@@ -111,6 +114,27 @@ router.get(
     // it so the Settings field prefills; the secret is never sent.
     const rsCreds = await restreamAuth.getAppCredentials();
     out.restream.clientId = rsCreds.clientId || null;
+
+    // Older installs may have YouTube connected without a stored channelId —
+    // backfill so Website embed can build the live-streams playlist URL.
+    if (out.youtube.connected && !out.youtube.channelId) {
+      try {
+        const mine = await youtube.getMineChannel();
+        if (mine && mine.channelId) {
+          await store.updateSettings({
+            youtube: {
+              channelId: mine.channelId,
+              channelTitle: mine.channelTitle || settings.youtube.channelTitle || null,
+            },
+          });
+          out.youtube.channelId = mine.channelId;
+          if (mine.channelTitle) out.youtube.channelTitle = mine.channelTitle;
+        }
+      } catch (_) {
+        // Non-fatal: embed card will ask to reconnect if channelId stays missing.
+      }
+    }
+
     res.json({ settings: out });
   })
 );
@@ -152,6 +176,7 @@ router.post(
   asyncHandler(async (req, res) => {
     await googleAuth.disconnect();
     cache.invalidate();
+    cache.invalidate('embed:feed:');
     res.json({ ok: true });
   })
 );
@@ -323,6 +348,42 @@ router.post(
     await store.updateSettings({
       restream: { channels, channelsRefreshedAt: new Date() },
     });
+    res.json({ channels });
+  })
+);
+
+// Toggle a single Restream destination (YouTube or Facebook) on or off.
+// This calls Restream directly and updates the cached list so the UI stays in sync.
+router.put(
+  '/restream/channel/:id/active',
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const id = req.params.id;
+    const active = Boolean((req.body || {}).active);
+    // Diagnostic log so we can see in server console what the UI is sending vs what Restream reports back.
+    console.log(`[restream] toggle requested: id=${id} active=${active}`);
+    try {
+      await restream.setChannelActive(id, active);
+    } catch (err) {
+      console.warn(`[restream] setChannelActive failed for ${id}:`, (err && err.message) || err);
+      throw err;
+    }
+    let channels = await restream.listChannels();
+    const after = channels.find((c) => String(c.id) === String(id));
+    console.log(`[restream] after listChannels (pre-force): id=${id} active=${after ? after.active : 'not-found'}`);
+    // Force the value we just commanded into the list we return. The list GET can lag or omit "active";
+    // by forcing here we guarantee the toggle response (and the persisted cache) shows the intended state immediately.
+    if (after) {
+      after.active = active;
+      console.log(`[restream] forcing active=${active} for id=${id} in response`);
+    } else {
+      // If not found in the fresh list (rare), inject a minimal record so the UI can flip.
+      channels = channels.concat([{ id, active, platform: 'unknown', displayName: '' }]);
+    }
+    await store.updateSettings({
+      restream: { channels, channelsRefreshedAt: new Date() },
+    });
+    cache.invalidate();
     res.json({ channels });
   })
 );

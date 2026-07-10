@@ -68,10 +68,16 @@ function classify(err) {
   }
 
   if (httpStatus === 403) {
+    const detail =
+      (gError && gError.message) ||
+      (reason ? `YouTube reason: ${reason}` : '') ||
+      '';
     return {
       code: 'forbidden',
       status: 403,
-      message: 'The connected YouTube account is not allowed to do that. Reconnect with the channel owner account.',
+      message: detail
+        ? `YouTube refused that action (${detail}). Reconnect with the channel owner account that Restream streams to.`
+        : 'The connected YouTube account is not allowed to do that. Reconnect with the channel owner account that Restream streams to.',
     };
   }
 
@@ -147,6 +153,17 @@ function summarizeStream(item) {
 /* -------------------------------- Broadcasts ----------------------------- */
 
 async function createBroadcast({ title, description, privacyStatus, scheduledStartTime }) {
+  // When Restream mode is active, STREAM1 must not create the YouTube live object.
+  // Restream creates it when the feed arrives. The YouTube connection is used only
+  // to discover what Restream created and to apply extras (playlist, thumbnail, privacy).
+  try {
+    const store = require('./store');
+    const s = await store.getSettings();
+    if (s && s.restream && s.restream.enabled) {
+      throw new Error('Refusing to create YouTube broadcast while Restream mode is ON. Restream creates the stream.');
+    }
+  } catch (_) { /* if store not ready, fall through to normal behaviour */ }
+
   return withYouTube(async (youtube) => {
     const res = await youtube.liveBroadcasts.insert({
       part: ['snippet', 'status', 'contentDetails'],
@@ -215,21 +232,240 @@ async function getVideo(videoId) {
   });
 }
 
+/**
+ * Set privacy on a live broadcast / its underlying video.
+ * Restream-created lives sometimes reject videos.update but accept
+ * liveBroadcasts.update (and vice versa), so try both and verify.
+ */
 async function updateBroadcastPrivacy(broadcastId, privacyStatus) {
-  return withYouTube(async (youtube) => {
-    // videos.update is the reliable way to change privacy on a broadcast's video.
-    const res = await youtube.videos.update({
-      part: ['status'],
-      requestBody: { id: broadcastId, status: { privacyStatus } },
+  const allowed = new Set(['public', 'unlisted', 'private']);
+  if (!allowed.has(privacyStatus)) {
+    throw new AppError('Privacy must be public, unlisted or private.', {
+      status: 400,
+      code: 'invalid',
     });
-    return res.data;
+  }
+
+  return withYouTube(async (ytApi) => {
+    const readPrivacy = async () => {
+      const listed = await ytApi.liveBroadcasts.list({
+        part: ['status'],
+        id: [broadcastId],
+      });
+      const item = listed.data.items && listed.data.items[0];
+      return (item && item.status && item.status.privacyStatus) || null;
+    };
+
+    const current = await readPrivacy();
+    if (current === privacyStatus) {
+      return { id: broadcastId, privacyStatus, alreadySet: true };
+    }
+
+    let lastErr = null;
+
+    // 1) liveBroadcasts.update — preferred for lives Restream just created.
+    try {
+      const listed = await ytApi.liveBroadcasts.list({
+        part: ['status'],
+        id: [broadcastId],
+      });
+      const item = listed.data.items && listed.data.items[0];
+      const status = {
+        privacyStatus,
+        selfDeclaredMadeForKids: Boolean(
+          item && item.status && item.status.selfDeclaredMadeForKids
+        ),
+      };
+      await ytApi.liveBroadcasts.update({
+        part: ['status'],
+        requestBody: { id: broadcastId, status },
+      });
+      const after = await readPrivacy();
+      if (after === privacyStatus) {
+        return { id: broadcastId, privacyStatus, method: 'liveBroadcasts.update' };
+      }
+    } catch (err) {
+      lastErr = err;
+    }
+
+    // 2) videos.update — same privacy field on the underlying video resource.
+    try {
+      const existing = await ytApi.videos.list({
+        part: ['status'],
+        id: [broadcastId],
+      });
+      const v = existing.data.items && existing.data.items[0];
+      const status = Object.assign({}, (v && v.status) || {}, { privacyStatus });
+      // Drop read-only / upload-only fields that videos.update rejects.
+      delete status.uploadStatus;
+      delete status.rejectionReason;
+      delete status.failureReason;
+      await ytApi.videos.update({
+        part: ['status'],
+        requestBody: { id: broadcastId, status },
+      });
+      const after = await readPrivacy();
+      if (after === privacyStatus) {
+        return { id: broadcastId, privacyStatus, method: 'videos.update' };
+      }
+      // API accepted but privacy didn't stick yet — still treat as attempted.
+      if (!after || after !== privacyStatus) {
+        lastErr = lastErr || new Error(
+          `YouTube accepted the privacy update but still reports "${after || 'unknown'}" (wanted "${privacyStatus}").`
+        );
+      }
+    } catch (err) {
+      lastErr = err;
+    }
+
+    if (lastErr) throw lastErr;
+    return { id: broadcastId, privacyStatus };
   });
 }
 
+/**
+ * Rename a live broadcast / video title (used when Restream Autodetect leaves
+ * "Stream via RTMP (OBS, Vmix, Zoom) with Restream" on the YouTube side).
+ * Optionally updates scheduledStartTime and description.
+ */
+async function updateBroadcastTitle(broadcastId, title, { description, scheduledStartTime } = {}) {
+  const clean = String(title || '').trim().slice(0, 100);
+  if (!clean) {
+    throw new AppError('Title is required.', { status: 400, code: 'invalid' });
+  }
+
+  return withYouTube(async (ytApi) => {
+    let lastErr = null;
+
+    // 1) liveBroadcasts.update snippet
+    try {
+      const listed = await ytApi.liveBroadcasts.list({
+        part: ['snippet'],
+        id: [broadcastId],
+      });
+      const item = listed.data.items && listed.data.items[0];
+      if (!item) throw new Error('Broadcast not found');
+      const snippet = Object.assign({}, item.snippet || {}, { title: clean });
+      if (description !== undefined && description !== null) {
+        snippet.description = String(description);
+      }
+      if (scheduledStartTime) {
+        snippet.scheduledStartTime = scheduledStartTime;
+      } else if (!snippet.scheduledStartTime) {
+        // liveBroadcasts.update requires scheduledStartTime when snippet is sent.
+        snippet.scheduledStartTime = new Date().toISOString();
+      }
+      await ytApi.liveBroadcasts.update({
+        part: ['snippet'],
+        requestBody: { id: broadcastId, snippet },
+      });
+      return { id: broadcastId, title: clean, method: 'liveBroadcasts.update' };
+    } catch (err) {
+      lastErr = err;
+    }
+
+    // 2) videos.update snippet (needs categoryId) — title/description only
+    try {
+      const listed = await ytApi.videos.list({
+        part: ['snippet'],
+        id: [broadcastId],
+      });
+      const item = listed.data.items && listed.data.items[0];
+      if (!item) throw lastErr || new Error('Video not found');
+      const snippet = Object.assign({}, item.snippet || {}, { title: clean });
+      if (description !== undefined && description !== null) {
+        snippet.description = String(description);
+      }
+      if (!snippet.categoryId) snippet.categoryId = '22'; // People & Blogs
+      await ytApi.videos.update({
+        part: ['snippet'],
+        requestBody: { id: broadcastId, snippet },
+      });
+      return { id: broadcastId, title: clean, method: 'videos.update' };
+    } catch (err) {
+      lastErr = err;
+    }
+
+    throw lastErr || new Error('Could not update YouTube title');
+  });
+}
+
+/**
+ * Retry privacy until YouTube reports the desired value (Restream often creates
+ * as public; the first update can race the new live object).
+ */
+async function ensureBroadcastPrivacy(broadcastId, privacyStatus, { attempts = 4, delayMs = 2500 } = {}) {
+  let lastErr = null;
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      const result = await updateBroadcastPrivacy(broadcastId, privacyStatus);
+      if (result && (result.alreadySet || result.privacyStatus === privacyStatus)) {
+        return { ok: true, ...result, attempts: i + 1 };
+      }
+    } catch (err) {
+      lastErr = err;
+    }
+    if (i < attempts - 1) {
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+  if (lastErr) throw lastErr;
+  throw new AppError(
+    `Could not set YouTube privacy to ${privacyStatus}.`,
+    { status: 502, code: 'privacy_failed' }
+  );
+}
+
+/**
+ * Delete a YouTube live broadcast / video.
+ * Restream-created lives often reject liveBroadcasts.delete with
+ * insufficientLivePermissions — try videos.delete, then soft-end (complete).
+ * Returns { deleted, method } or throws.
+ */
 async function deleteBroadcast(broadcastId) {
-  return withYouTube(async (youtube) => {
-    await youtube.liveBroadcasts.delete({ id: broadcastId });
-    return true;
+  return withYouTube(async (ytApi) => {
+    let lastErr = null;
+
+    try {
+      await ytApi.liveBroadcasts.delete({ id: broadcastId });
+      return { deleted: true, method: 'liveBroadcasts.delete' };
+    } catch (err) {
+      lastErr = err;
+    }
+
+    // Fallback: delete the underlying video resource.
+    try {
+      await ytApi.videos.delete({ id: broadcastId });
+      return { deleted: true, method: 'videos.delete' };
+    } catch (err) {
+      lastErr = err;
+    }
+
+    // Soft-end: if still live, transition to complete so it stops being "on air".
+    try {
+      const listed = await ytApi.liveBroadcasts.list({
+        part: ['status'],
+        id: [broadcastId],
+      });
+      const item = listed.data.items && listed.data.items[0];
+      const life = (item && item.status && item.status.lifeCycleStatus) || '';
+      if (life && !['complete', 'revoked'].includes(life)) {
+        await ytApi.liveBroadcasts.transition({
+          id: broadcastId,
+          broadcastStatus: 'complete',
+          part: ['status'],
+        });
+        return { deleted: false, ended: true, method: 'liveBroadcasts.transition' };
+      }
+      // Already gone / ended — treat as success for STREAM1 cleanup.
+      if (!item || ['complete', 'revoked'].includes(life)) {
+        return { deleted: false, alreadyGone: true, method: 'none' };
+      }
+    } catch (err) {
+      lastErr = err;
+    }
+
+    throw lastErr || new Error('Could not delete YouTube broadcast');
   });
 }
 
@@ -323,6 +559,236 @@ async function stopBroadcast(broadcastId) {
 }
 
 /* --------------------------------- Playlists ----------------------------- */
+
+async function getMineChannel() {
+  return withYouTube(async (youtube) => {
+    const res = await youtube.channels.list({
+      part: ['snippet'],
+      mine: true,
+    });
+    const channel = res.data.items && res.data.items[0];
+    if (!channel) return null;
+    return {
+      channelId: channel.id || null,
+      channelTitle: (channel.snippet && channel.snippet.title) || null,
+    };
+  });
+}
+
+/** Auto-playlist of a channel's public live streams (UC… → UULV…). */
+function liveStreamsPlaylistId(channelId) {
+  const id = String(channelId || '').trim();
+  if (!/^UC[\w-]{20,}$/.test(id)) return null;
+  return `UULV${id.slice(2)}`;
+}
+
+/** Auto-playlist of a channel's public uploads (UC… → UU…). */
+function uploadsPlaylistId(channelId) {
+  const id = String(channelId || '').trim();
+  if (!/^UC[\w-]{20,}$/.test(id)) return null;
+  return `UU${id.slice(2)}`;
+}
+
+function thumbFromSnippet(sn, videoId) {
+  return thumbnailFromSnippet((sn && sn.thumbnails) || {}, videoId);
+}
+
+function mapPlaylistItem(item) {
+  const sn = item && item.snippet;
+  const videoId = sn && sn.resourceId && sn.resourceId.videoId;
+  if (!videoId) return null;
+  // Skip deleted / private placeholders YouTube leaves in playlists.
+  if (sn.title === 'Private video' || sn.title === 'Deleted video') return null;
+  return {
+    id: videoId,
+    title: sn.title || 'Untitled',
+    publishedAt: sn.publishedAt || null,
+    thumbnail: thumbFromSnippet(sn, videoId),
+  };
+}
+
+function mapBroadcastItem(b, { allowPrivate = false } = {}) {
+  if (!b || !b.id) return null;
+  const privacy = (b.status && b.status.privacyStatus) || '';
+  if (privacy === 'private' && !allowPrivate) return null;
+  if (privacy && privacy !== 'public' && privacy !== 'unlisted' && privacy !== 'private') return null;
+  const sn = b.snippet || {};
+  return {
+    id: b.id,
+    title: sn.title || 'Untitled',
+    publishedAt: sn.actualStartTime || sn.scheduledStartTime || sn.publishedAt || null,
+    thumbnail: thumbFromSnippet(sn, b.id),
+    lifeCycleStatus: (b.status && b.status.lifeCycleStatus) || '',
+  };
+}
+
+async function listPlaylistVideos(ytApi, playlistId, limit) {
+  const videos = [];
+  if (!playlistId || limit <= 0) return videos;
+  let pageToken;
+  while (videos.length < limit) {
+    // eslint-disable-next-line no-await-in-loop
+    const res = await ytApi.playlistItems.list({
+      part: ['snippet', 'status'],
+      playlistId,
+      maxResults: Math.min(50, limit - videos.length + 5),
+      pageToken,
+    });
+    for (const item of res.data.items || []) {
+      const privacy = item.status && item.status.privacyStatus;
+      if (privacy && privacy !== 'public' && privacy !== 'unlisted') continue;
+      const mapped = mapPlaylistItem(item);
+      if (!mapped) continue;
+      videos.push(mapped);
+      if (videos.length >= limit) break;
+    }
+    pageToken = res.data.nextPageToken;
+    if (!pageToken) break;
+  }
+  return videos;
+}
+
+/**
+ * Public website-embed feed for the OAuth-connected YouTube channel:
+ * current live (if any) + latest streams from that channel.
+ */
+async function getWebsiteEmbedFeed(channelId, { maxVideos = 12 } = {}) {
+  const id = String(channelId || '').trim();
+  if (!/^UC[\w-]{20,}$/.test(id)) {
+    throw new AppError('YouTube channel is not configured.', { status: 409, code: 'no_channel' });
+  }
+
+  const livePlaylistId = liveStreamsPlaylistId(id);
+  const uploadsId = uploadsPlaylistId(id);
+  const limit = Math.min(Math.max(Number(maxVideos) || 12, 1), 25);
+
+  return withYouTube(async (ytApi) => {
+    let live = null;
+
+    // 1) Active live broadcasts owned by the connected account (includes Restream-created).
+    try {
+      const liveRes = await ytApi.liveBroadcasts.list({
+        part: ['snippet', 'status'],
+        broadcastStatus: 'active',
+        maxResults: 10,
+      });
+      const items = liveRes.data.items || [];
+      // Prefer public/unlisted for the church website; fall back to any active
+      // (private tests still show in the STREAM1 Settings preview).
+      const pick =
+        items.find((b) => {
+          const privacy = b.status && b.status.privacyStatus;
+          return privacy === 'public' || privacy === 'unlisted';
+        }) || items[0];
+      const mapped = mapBroadcastItem(pick, { allowPrivate: true });
+      if (mapped) live = { id: mapped.id, title: mapped.title, thumbnail: mapped.thumbnail };
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[youtube] embed liveBroadcasts.active:', err && err.message ? err.message : err);
+    }
+
+    // 1b) mine=true can still show lifeCycleStatus=live when broadcastStatus=active is empty.
+    if (!live) {
+      try {
+        const mineLive = await ytApi.liveBroadcasts.list({
+          part: ['snippet', 'status'],
+          mine: true,
+          maxResults: 25,
+        });
+        const onAir = (mineLive.data.items || []).find((b) => {
+          const life = (b.status && b.status.lifeCycleStatus) || '';
+          return life === 'live' || life === 'liveStarting';
+        });
+        const mapped = mapBroadcastItem(onAir, { allowPrivate: true });
+        if (mapped) live = { id: mapped.id, title: mapped.title, thumbnail: mapped.thumbnail };
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('[youtube] embed liveBroadcasts.mine live:', err && err.message ? err.message : err);
+      }
+    }
+
+    // 2) Public search fallback — finds a live on this channel even if broadcast list misses it.
+    if (!live) {
+      try {
+        const searchRes = await ytApi.search.list({
+          part: ['snippet'],
+          channelId: id,
+          eventType: 'live',
+          type: ['video'],
+          maxResults: 1,
+        });
+        const hit = searchRes.data.items && searchRes.data.items[0];
+        const vid = hit && hit.id && hit.id.videoId;
+        if (vid) {
+          const sn = hit.snippet || {};
+          live = {
+            id: vid,
+            title: sn.title || 'Live now',
+            thumbnail: thumbFromSnippet(sn, vid),
+          };
+        }
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('[youtube] embed search.live:', err && err.message ? err.message : err);
+      }
+    }
+
+    // Latest streams: prefer the channel Live playlist + completed broadcasts.
+    // Uploads (UU) are only a fallback when those are empty (new channels).
+    const byId = new Map();
+    const addVideo = (v) => {
+      if (!v || !v.id) return;
+      if (live && v.id === live.id) return;
+      if (byId.has(v.id)) return;
+      byId.set(v.id, v);
+    };
+
+    try {
+      for (const v of await listPlaylistVideos(ytApi, livePlaylistId, limit)) addVideo(v);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[youtube] embed UULV playlist:', err && err.message ? err.message : err);
+    }
+
+    try {
+      const mineRes = await ytApi.liveBroadcasts.list({
+        part: ['snippet', 'status'],
+        mine: true,
+        maxResults: 50,
+      });
+      for (const b of mineRes.data.items || []) {
+        const life = (b.status && b.status.lifeCycleStatus) || '';
+        // Keep live + finished broadcasts only (not unstarted drafts).
+        if (life === 'created' || life === 'ready' || life === 'testStarting' || life === 'testing') continue;
+        const mapped = mapBroadcastItem(b, { allowPrivate: false });
+        if (mapped) addVideo(mapped);
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[youtube] embed liveBroadcasts.mine:', err && err.message ? err.message : err);
+    }
+
+    if (byId.size === 0) {
+      try {
+        for (const v of await listPlaylistVideos(ytApi, uploadsId, limit)) addVideo(v);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('[youtube] embed UU uploads:', err && err.message ? err.message : err);
+      }
+    }
+
+    const videos = Array.from(byId.values())
+      .sort((a, b) => {
+        const ta = new Date(a.publishedAt || 0).getTime();
+        const tb = new Date(b.publishedAt || 0).getTime();
+        return tb - ta;
+      })
+      .slice(0, limit)
+      .map(({ id: vid, title, publishedAt, thumbnail }) => ({ id: vid, title, publishedAt, thumbnail }));
+
+    return { live, videos, playlistId: livePlaylistId, channelId: id };
+  });
+}
 
 async function listPlaylists() {
   return withYouTube(async (youtube) => {
@@ -446,6 +912,8 @@ module.exports = {
   getBroadcast,
   getVideo,
   updateBroadcastPrivacy,
+  ensureBroadcastPrivacy,
+  updateBroadcastTitle,
   deleteBroadcast,
   transitionBroadcast,
   goLiveBroadcast,
@@ -457,4 +925,7 @@ module.exports = {
   defaultThumbnailUrl,
   thumbnailFromSnippet,
   listVideoThumbnails,
+  getMineChannel,
+  liveStreamsPlaylistId,
+  getWebsiteEmbedFeed,
 };

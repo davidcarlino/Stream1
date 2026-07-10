@@ -6,6 +6,7 @@ const cache = require('../cache');
 const coverImages = require('../coverImages');
 const { asyncHandler, AppError } = require('../middleware/errors');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
+const { normalizeStreamTo, assertFacebookAllowed } = require('../streamDestinations');
 
 const router = express.Router();
 const PRIVACY = ['public', 'unlisted', 'private'];
@@ -24,19 +25,20 @@ function sanitizeTemplate(body) {
   const name = (body.name || '').trim();
   if (!name) throw new AppError('Template needs a name.', { status: 400, code: 'invalid' });
 
+  const allowCustomTitle = Boolean(body.allowCustomTitle);
+  const allowCustomDescription = Boolean(body.allowCustomDescription);
+
   const titlePattern = (body.titlePattern || '').trim();
-  if (!titlePattern) throw new AppError('Template needs a title pattern.', { status: 400, code: 'invalid' });
+  if (!allowCustomTitle && !titlePattern) {
+    throw new AppError('Template needs a title pattern.', { status: 400, code: 'invalid' });
+  }
 
   const defaultPrivacy = PRIVACY.includes(body.defaultPrivacy) ? body.defaultPrivacy : 'unlisted';
 
-  // "Stream to" destinations — YouTube is the primary platform and always on
-  // (ATEM pushes there); Facebook is an optional simulcast via the relay.
+  // Facebook only when default privacy is Public.
   const rawStreamTo = body.streamTo && typeof body.streamTo === 'object' ? body.streamTo : {};
-  const streamTo = {
-    youtube: rawStreamTo.youtube === undefined ? true : Boolean(rawStreamTo.youtube),
-    facebook: Boolean(rawStreamTo.facebook),
-  };
-  if (!streamTo.youtube && !streamTo.facebook) streamTo.youtube = true;
+  assertFacebookAllowed(defaultPrivacy, Boolean(rawStreamTo.facebook));
+  const streamTo = normalizeStreamTo(rawStreamTo, defaultPrivacy);
 
   let extraFields = [];
   if (Array.isArray(body.extraFields)) {
@@ -52,7 +54,10 @@ function sanitizeTemplate(body) {
 
   return {
     name,
-    titlePattern,
+    allowCustomTitle,
+    allowCustomDescription,
+    // Keep a usable fallback when custom title is on but no pattern was typed.
+    titlePattern: allowCustomTitle ? (titlePattern || name) : titlePattern,
     descriptionPattern: (body.descriptionPattern || '').toString(),
     defaultPrivacy,
     streamTo,

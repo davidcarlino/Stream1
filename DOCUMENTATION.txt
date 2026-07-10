@@ -196,7 +196,10 @@ Permanent stream key
   • Recreate only if YouTube lost the key — you must enter the new key in ATEM once.
 
 Website embed
-  • Copy the iframe code for your church website (Sunday Services playlist).
+  • Copy the snippet for your public church website. It talks to YouTube
+    directly (no STREAM1 server on the public site). Left: current live, or a
+    black box with Refresh when offline. Right: latest lives, newest first.
+    Requires YOUTUBE_API_KEY in .env (restrict the key to your church domain).
 
 Staff logins
   • Add usernames and passwords for volunteers.

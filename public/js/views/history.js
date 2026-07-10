@@ -31,9 +31,12 @@ function streamWhen(s) {
 }
 
 function isPastStream(s) {
+  if (s.restreamPending) return false;
   const lc = s.lifeCycleStatus || '';
   if (lc === 'complete' || lc === 'revoked') return true;
-  if (s.statusLabel === 'Ended' || s.localOnly) return true;
+  if (s.statusLabel === 'Ended') return true;
+  // Local-only ended records (no longer on YouTube) — not pending Restream events.
+  if (s.localOnly && !s.restreamPending) return true;
   return false;
 }
 
@@ -56,6 +59,58 @@ function sortPast(a, b) {
 
 function isUpcomingStream(s) {
   return !isPastStream(s);
+}
+
+/** Editable before go-live: Restream pending, or upcoming (not live/ended). */
+function canEditStreamDetails(s) {
+  if (s.restreamPending) return true;
+  if (isPastStream(s)) return false;
+  const lc = s.lifeCycleStatus || '';
+  if (lc === 'live' || lc === 'liveStarting') return false;
+  if (s.statusLabel === 'Live') return false;
+  return true;
+}
+
+function toDateInputValue(iso) {
+  if (!iso) {
+    const n = new Date();
+    return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
+  }
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return toDateInputValue(null);
+  // Show Sydney calendar date for church schedules.
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Australia/Sydney',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(d);
+    const get = (t) => (parts.find((p) => p.type === t) || {}).value;
+    return `${get('year')}-${get('month')}-${get('day')}`;
+  } catch (_) {
+    return d.toISOString().slice(0, 10);
+  }
+}
+
+function toTimeInputValue(iso) {
+  if (!iso) return '09:00';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '09:00';
+  try {
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Australia/Sydney',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).formatToParts(d);
+    const get = (t) => (parts.find((p) => p.type === t) || {}).value;
+    let h = get('hour');
+    if (h === '24') h = '00';
+    return `${h}:${get('minute')}`;
+  } catch (_) {
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  }
 }
 
 function filterLabel(filter) {
@@ -82,7 +137,8 @@ export async function renderHistory(ctx = {}) {
   const isAdmin = ctx.state && ctx.state.user && ctx.state.user.role === 'admin';
   const node = h('<div></div>');
   node._streamsState = { filter: 'all', search: '', streams: [], activeBroadcastId: null };
-  await load(node, false, isAdmin);
+  // Return shell immediately so nav clicks never wait on /api/streams.
+  void load(node, false, isAdmin);
   return node;
 }
 
@@ -186,6 +242,14 @@ function deleteStreamMessage(s, isTarget) {
   if (s.restreamPending) {
     return `Remove "${title}"? Nothing has been created on YouTube yet. This cannot be undone.`;
   }
+  if (s.viaRestream) {
+    let msg =
+      `Remove "${title}" from STREAM1? We will try to delete it on YouTube too, but Restream-created videos sometimes cannot be deleted via API — you may still need to remove them in YouTube Studio.`;
+    if (s.statusLabel === 'Live' || isTarget) {
+      msg = `This stream is live or set as the on-air target. ${msg}`;
+    }
+    return msg;
+  }
   let msg = `Are you sure you want to delete "${title}"? It will be removed from STREAM1 and YouTube. This cannot be undone.`;
   if (s.statusLabel === 'Live' || isTarget) {
     msg = `This stream is live or set as the on-air target. ${msg}`;
@@ -216,7 +280,15 @@ async function deleteStreamWithConfirm(s, node, isAdmin, isTarget, { recreate = 
   const url = `/api/streams/${encodeURIComponent(s.broadcastId)}${recreate ? '?recreate=1' : ''}`;
   const res = await api.del(url, creds);
   if (!res.ok) return toast(res.error, 'err');
-  toast(recreate ? 'Recreated. Ready to stream.' : 'Stream deleted.', 'ok');
+  if (recreate) {
+    toast(res.data && res.data.note ? res.data.note : 'Recreated. Ready to stream.', 'ok');
+  } else if (res.data && res.data.youtubeWarning) {
+    toast('Removed from STREAM1. YouTube would not delete this Restream video — remove it in YouTube Studio if needed.', 'warn');
+  } else if (res.data && res.data.youtubeEnded && !res.data.youtubeDeleted) {
+    toast('Removed from STREAM1 and ended on YouTube (could not fully delete the video).', 'ok');
+  } else {
+    toast('Stream deleted.', 'ok');
+  }
   load(node, true, isAdmin);
 }
 
@@ -251,6 +323,7 @@ function rowEl(s, node, isAdmin, activeBroadcastId) {
       <div class="stream-actions mt">
         ${pending ? '' : '<button class="btn btn-sm" data-act="play">Play</button>'}
         ${pending ? '' : '<button class="btn btn-sm btn-outline" data-act="share">Share</button>'}
+        ${isAdmin && canEditStreamDetails(s) ? '<button class="btn btn-sm btn-outline" data-act="edit">Edit</button>' : ''}
         ${!pending && isAdmin ? '<button class="btn btn-sm btn-outline" data-act="privacy">Privacy</button>' : ''}
         ${!pending && isPastStream(s) ? '<button class="btn btn-sm btn-outline" data-act="download">Download</button>' : ''}
         ${isAdmin && s.stuck ? '<button class="btn btn-sm btn-danger" data-act="recreate">Cancel &amp; Recreate</button>' : ''}
@@ -279,6 +352,9 @@ function rowEl(s, node, isAdmin, activeBroadcastId) {
   }
   const privacyBtn = row.querySelector('[data-act="privacy"]');
   if (privacyBtn) privacyBtn.onclick = () => privacyPanel(s, node, isAdmin);
+
+  const editBtn = row.querySelector('[data-act="edit"]');
+  if (editBtn) editBtn.onclick = () => editDetailsPanel(s, node, isAdmin);
 
   const recreate = row.querySelector('[data-act="recreate"]');
   if (recreate) {
@@ -369,6 +445,61 @@ function privacyPanel(s, node, isAdmin) {
         busy(e.target, false, 'Save');
         if (!res.ok) return toast(res.error, 'err');
         toast('Privacy updated.', 'ok');
+        close(true);
+        load(node, true, isAdmin);
+      };
+      return el;
+    });
+  });
+}
+
+function editDetailsPanel(s, node, isAdmin) {
+  import('../ui.js').then(({ modal }) => {
+    modal((close) => {
+      const dateVal = toDateInputValue(s.scheduledStartTime);
+      const timeVal = toTimeInputValue(s.scheduledStartTime);
+      const el = h(`<div>
+        <h2>Edit stream</h2>
+        <p class="muted">${s.restreamPending
+          ? 'Updates the name and schedule, and pushes to Restream (YouTube/Facebook destinations) when this event is armed.'
+          : 'Updates the name and schedule on YouTube, and Facebook if linked.'}</p>
+        <div class="field">
+          <label for="editTitle">Name</label>
+          <input type="text" id="editTitle" value="${esc(s.title || '')}" maxlength="100" />
+        </div>
+        <div class="grid grid-2">
+          <div class="field">
+            <label for="editDate">Date</label>
+            <input type="date" id="editDate" value="${esc(dateVal)}" />
+          </div>
+          <div class="field">
+            <label for="editTime">Time <span class="muted">(Sydney)</span></label>
+            <input type="time" id="editTime" value="${esc(timeVal)}" />
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-outline" id="cancel">Cancel</button>
+          <button class="btn" id="save">Save</button>
+        </div>
+      </div>`);
+      el.querySelector('#cancel').onclick = () => close(false);
+      el.querySelector('#save').onclick = async (e) => {
+        const title = el.querySelector('#editTitle').value.trim();
+        const date = el.querySelector('#editDate').value;
+        const time = el.querySelector('#editTime').value;
+        if (!title) return toast('Please enter a name.', 'err');
+        if (!date || !time) return toast('Please set date and time.', 'err');
+        busy(e.target, true);
+        const res = await api.put(`/api/streams/${encodeURIComponent(s.broadcastId)}/details`, {
+          title,
+          date,
+          time,
+          description: s.description || '',
+        });
+        busy(e.target, false, 'Save');
+        if (!res.ok) return toast(res.error, 'err');
+        if (res.data && res.data.warning) toast(res.data.warning, 'warn');
+        else toast('Stream updated.', 'ok');
         close(true);
         load(node, true, isAdmin);
       };

@@ -96,16 +96,23 @@ function highlightNav() {
 
 /* ------------------------------- Routing --------------------------------- */
 
+// Bumps on every navigation so a slow page (e.g. Stream Test waiting on
+// /monitor/live) cannot mount after the user has already clicked elsewhere.
+let routeGen = 0;
+
 async function handleRoute() {
-  if (state.needsFirstUser) return renderView(() => renderLogin({ firstRun: true }));
-  if (!state.user) return renderView(() => renderLogin({ firstRun: false }));
+  const gen = ++routeGen;
+
+  if (state.needsFirstUser) return renderView(() => renderLogin({ firstRun: true }), gen);
+  if (!state.user) return renderView(() => renderLogin({ firstRun: false }), gen);
 
   // Force admins through setup until it's complete.
   if (!state.setupComplete) {
-    if (isAdmin()) return renderView(renderSetup);
+    if (isAdmin()) return renderView(renderSetup, gen);
     return renderView(() =>
       h(`<div class="card center"><h2>Setup not finished</h2>
-        <p class="muted">An administrator needs to finish first-time setup before streams can be created.</p></div>`)
+        <p class="muted">An administrator needs to finish first-time setup before streams can be created.</p></div>`),
+      gen
     );
   }
 
@@ -118,14 +125,21 @@ async function handleRoute() {
     route = ROUTES.new;
   }
   highlightNav();
-  await renderView(route.render);
+  await renderView(route.render, gen);
 }
 
-async function renderView(renderFn) {
+async function renderView(renderFn, gen) {
+  // Immediate feedback so the previous page never looks "stuck" while the
+  // next view fetches data.
+  if (gen === routeGen) {
+    mount(h('<div class="loading">Loading…</div>'));
+  }
   try {
     const node = await renderFn({ state, navigate, refreshHealth });
+    if (gen !== routeGen) return;
     if (node) mount(node);
   } catch (err) {
+    if (gen !== routeGen) return;
     mount(h(`<div class="card"><h2>Something went wrong</h2><p class="muted">Please reload the page.</p></div>`));
   }
 }

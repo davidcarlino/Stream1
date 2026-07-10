@@ -65,8 +65,9 @@ function buildVariables(settings, form = {}) {
   vars.time = formatTime(form.time);
 
   // Any extra free-text fields (e.g. name) override.
+  // customTitle / customDescription are resolved separately — not pattern vars.
   for (const [k, v] of Object.entries(form)) {
-    if (k === 'date' || k === 'time') continue;
+    if (k === 'date' || k === 'time' || k === 'customTitle' || k === 'customDescription') continue;
     if (v !== undefined && v !== null && v !== '') vars[k] = String(v);
   }
 
@@ -82,12 +83,24 @@ function substitute(pattern, vars) {
 
 /**
  * Resolve a template's title/description against settings + form data.
+ * When the template allows custom title/description, the New Stream form
+ * values (form.customTitle / form.customDescription) replace the patterns.
  */
-function resolve(template, settings, form) {
+function resolve(template, settings, form = {}) {
   const vars = buildVariables(settings, form);
+  const customTitle = form.customTitle != null ? String(form.customTitle).trim() : '';
+  const customDescription = form.customDescription != null ? String(form.customDescription) : '';
+
+  const title = template.allowCustomTitle
+    ? customTitle
+    : substitute(template.titlePattern, vars);
+  const description = template.allowCustomDescription
+    ? customDescription
+    : substitute(template.descriptionPattern, vars);
+
   return {
-    title: substitute(template.titlePattern, vars),
-    description: substitute(template.descriptionPattern, vars),
+    title,
+    description,
     variables: vars,
   };
 }

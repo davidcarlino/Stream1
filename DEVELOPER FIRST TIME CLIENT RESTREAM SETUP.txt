@@ -1,20 +1,27 @@
-Restream app registration is free and self-serve — any Restream account can create an app at developers.restream.io (no approval process). The client just clicks "Create New", adds the redirect URI http://localhost:15000/restream/oauth2callback, ticks the profile/channels/stream scopes, and copies the Client ID + Secret.
+Restream app registration is free and self-serve — any Restream account can create an app at developers.restream.io (no approval process). The client just clicks "Create New", adds the redirect URI http://localhost:15000/restream/oauth2callback, ticks the profile/channels/stream scopes, and copies the Client ID + Secret. Note: Restream's Autodetect banner ("Stream via RTMP…") cannot be renamed via the public API when using the permanent encoder key — STREAM1 still pushes the event name to YouTube/Facebook destination titles via channel-meta.
 
 How it works now
 Setup (one time):
 
 In Settings → new Restream card: paste the Client ID + Secret and save (secret is stored encrypted, same as the YouTube/Facebook tokens; can also go in .env as RESTREAM_CLIENT_ID/RESTREAM_CLIENT_SECRET).
 Click Connect Restream — opens Chrome for the church's Restream login, same flow as the existing YouTube/Facebook connect buttons.
-In the Restream dashboard, connect the YouTube channel and Facebook page as destinations once (their API can't do this part).
+In the Restream dashboard, connect destinations once (their API can't do this part):
+  - YouTube: choose "YouTube" / "YouTube Events" — NOT "YouTube Stream Now".
+    Stream Now often reuses the SAME YouTube video every go-live.
+    Events creates a NEW YouTube video each time (wedding, funeral, Sunday, etc.).
+  - Facebook: connect the church page as usual.
 Click Turn Restream mode ON, then reveal the Restream stream key (password-gated, like the YouTube one) and enter it into the ATEM once.
+  Keep that ONE Restream key forever — templates only change the title Restream sends.
 Per event — nothing changes for volunteers:
 
-New Stream works exactly as before: pick a template, date/time, privacy, tick YouTube/Facebook. The app resolves the template title/description and pushes them to Restream, and enables/disables the YouTube/Facebook destinations in Restream to match the ticks.
+New Stream works exactly as before: pick a template, date/time, privacy, tick YouTube/Facebook. The app resolves the template title/description and pushes them to Restream, ends any leftover YouTube live, and enables/disables the YouTube/Facebook destinations in Restream to match the ticks.
 Start the ATEM → Restream goes live on the chosen platforms and creates the broadcasts itself.
-Because you chose hybrid, YouTube stays connected in the background: within about a minute of going live, the app finds the broadcast Restream created (matched by title, checked every 60s and on each Stream Test poll) and applies the playlist, cover image/thumbnail, and per-event privacy from the template. The watch link then appears on the Streams page.
+Because you chose hybrid, YouTube stays connected in the background: within about a minute of going live, the app finds the broadcast Restream created (matched by Restream's event video id / title, checked every 60s and on each Stream Test poll) and applies the playlist, cover image/thumbnail, and per-event privacy from the template. The watch link then appears on the Streams page.
 What's automatically turned off in Restream mode: direct YouTube broadcast creation, the ffmpeg Facebook relay, and the YouTube-key health checks. The Stream Test page now shows "Streamer → Restream" status (live/no signal) instead of the YouTube ingest, and pending Restream events show on the Streams page as "Ready — start ATEM" with an admin Cancel button. Turning the mode OFF (or disconnecting Restream) reverts everything to the current direct-YouTube path.
 
 Two things to tell the client:
 
 Switching modes means re-keying the ATEM (Restream key vs YouTube key) — the app reminds you and shows the right key in Settings.
 If two upcoming events are created before either goes live, the destination titles in Restream reflect the most recently created one — fine for one-service-at-a-time use.
+Always fully stop ATEM between services. If the previous live is still open, Restream can keep feeding the same YouTube video even with a new title.
+STREAM1 now arms the schedule-due pending event (e.g. 2:45pm ATEM → 3pm event, not 8pm), force-ends leftover YouTube lives, and retires ended video ids so they are never linked again.

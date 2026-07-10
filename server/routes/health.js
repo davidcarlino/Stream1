@@ -63,6 +63,20 @@ async function computeHealth() {
         message: 'YouTube is not connected — playlists, thumbnails and privacy cannot be applied to Restream broadcasts.',
         fix: 'reconnect',
       });
+    } else {
+      // Detect Restream YouTube destination vs STREAM1 channel mismatch early.
+      try {
+        const restreamFlow = require('../restreamFlow');
+        await restreamFlow.assertRestreamYouTubeWritable({ streamTo: { youtube: true } });
+      } catch (err) {
+        if (err && (err.code === 'youtube_channel_mismatch' || err.code === 'youtube_forbidden' || err.code === 'restream_no_youtube')) {
+          result.issues.push({
+            code: err.code,
+            message: err.message,
+            fix: 'reconnect',
+          });
+        }
+      }
     }
     return result;
   }

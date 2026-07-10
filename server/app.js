@@ -29,6 +29,10 @@ const qrRoutes = require('./routes/qr');
 const lanProxyRoutes = require('./routes/lanProxy');
 const emailRoutes = require('./routes/email');
 const smsRoutes = require('./routes/sms');
+const embedRoutes = require('./routes/embed');
+const store = require('./store');
+const { requireAuth } = require('./middleware/auth');
+const { websiteEmbedDocument } = require('./websiteEmbedSnippet');
 
 const PUBLIC_DIR = path.resolve(__dirname, '..', 'public');
 
@@ -116,15 +120,21 @@ function buildApp() {
 
   // Security headers. CSP is tuned to allow our own assets plus embedded
   // YouTube players and thumbnails — nothing else loads third-party code.
+  // /embed is designed to be iframed on the church website, so it allows
+  // any parent frame (frame-ancestors *) and skips X-Frame-Options.
   app.use(
     (req, res, next) => {
       // LAN proxy serves third-party control UIs in iframes — skip STREAM1 CSP/frame rules.
       if (req.path.startsWith('/api/lan-proxy')) return next();
+      const isPublicEmbed =
+        req.path === '/embed' ||
+        req.path.startsWith('/embed/') ||
+        req.path.startsWith('/api/embed');
       return helmet({
         contentSecurityPolicy: {
           directives: {
             defaultSrc: ["'self'"],
-            scriptSrc: ["'self'"],
+            scriptSrc: isPublicEmbed ? ["'self'", "'unsafe-inline'"] : ["'self'"],
             styleSrc: ["'self'", "'unsafe-inline'"],
             imgSrc: [
               "'self'",
@@ -134,14 +144,18 @@ function buildApp() {
               'https://yt3.ggpht.com',
               'https://*.ggpht.com',
             ],
-            connectSrc: ["'self'"],
+            connectSrc: isPublicEmbed
+              ? ["'self'", 'https://www.googleapis.com']
+              : ["'self'"],
             frameSrc: buildFrameSrcDirectives(),
             objectSrc: ["'none'"],
             baseUri: ["'self'"],
             formAction: ["'self'"],
+            ...(isPublicEmbed ? { frameAncestors: ['*'] } : {}),
           },
         },
         crossOriginEmbedderPolicy: false,
+        ...(isPublicEmbed ? { frameguard: false } : {}),
       })(req, res, next);
     }
   );
@@ -198,8 +212,48 @@ function buildApp() {
   app.use('/api/health', healthRoutes);
   app.use('/api/qr', qrRoutes);
   app.use('/api/lan-proxy', lanProxyRoutes);
+  // Public church-website embed feed (no login).
+  app.use('/api/embed', embedRoutes);
+
+  // Settings preview of the YouTube-direct public embed (same as Copy snippet).
+  app.get(
+    '/embed/preview',
+    requireAuth,
+    async (req, res, next) => {
+      try {
+        const settings = await store.getSettings();
+        const channelId = settings.youtube && settings.youtube.channelId;
+        const apiKey = config.google.youtubeApiKey;
+        if (!channelId || !apiKey) {
+          res
+            .status(503)
+            .type('html')
+            .send(
+              '<!DOCTYPE html><html><body style="margin:0;background:#000;color:#94a3b8;font-family:system-ui;display:flex;align-items:center;justify-content:center;min-height:240px;padding:1rem;text-align:center;">Connect YouTube and set YOUTUBE_API_KEY to preview.</body></html>'
+            );
+          return;
+        }
+        res
+          .type('html')
+          .set('Cache-Control', 'no-store')
+          .send(websiteEmbedDocument({ channelId, apiKey }));
+      } catch (err) {
+        next(err);
+      }
+    }
+  );
 
   app.use('/api', (req, res, next) => next(new AppError('Not found.', { status: 404, code: 'not_found' })));
+
+  // Legacy local /embed (OAuth feed) — kept for compatibility; Copy uses YouTube-direct.
+  app.get('/embed', (req, res, next) => {
+    if (sendAsset(res, '/embed/index.html')) return;
+    next(new AppError('Embed page not found.', { status: 404, code: 'not_found' }));
+  });
+  app.get('/embed/', (req, res, next) => {
+    if (sendAsset(res, '/embed/index.html')) return;
+    next(new AppError('Embed page not found.', { status: 404, code: 'not_found' }));
+  });
 
   // Static SPA + client-side routing fallback. Uses fs.readFileSync so bundled
   // assets are served correctly from the pkg snapshot in the packaged exe.

@@ -16,6 +16,8 @@ export async function openTemplateEditor({ template, settings, onSaved }) {
     name: '',
     titlePattern: '',
     descriptionPattern: '',
+    allowCustomTitle: false,
+    allowCustomDescription: false,
     defaultPrivacy: 'unlisted',
     streamTo: { youtube: true, facebook: false },
     defaultTime: '',
@@ -53,11 +55,31 @@ Thank you,
         <input type="text" id="name" value="${esc(t.name)}" placeholder="e.g. Sunday Morning" />
       </div>
       <div class="field">
+        <label class="switch-row">
+          <span>Allow custom title on New Stream</span>
+          <span class="switch">
+            <input type="checkbox" id="allowCustomTitle" ${t.allowCustomTitle ? 'checked' : ''} />
+            <span class="switch-slider" aria-hidden="true"></span>
+          </span>
+        </label>
+        <p class="hint">When ON, staff type the YouTube title each time — the title pattern below is hidden.</p>
+      </div>
+      <div class="field" id="titlePatternWrap">
         <label>Title pattern</label>
         <input type="text" id="title" value="${esc(t.titlePattern)}" placeholder="Sunday Morning Service — {date}" />
         <div class="chips" data-target="title">${chips}</div>
       </div>
       <div class="field">
+        <label class="switch-row">
+          <span>Allow custom description on New Stream</span>
+          <span class="switch">
+            <input type="checkbox" id="allowCustomDescription" ${t.allowCustomDescription ? 'checked' : ''} />
+            <span class="switch-slider" aria-hidden="true"></span>
+          </span>
+        </label>
+        <p class="hint">When ON, staff type the YouTube description each time — the description pattern below is hidden.</p>
+      </div>
+      <div class="field" id="descPatternWrap">
         <label>Description pattern</label>
         <textarea id="desc" placeholder="{church_name} livestream, {date} at {time}.">${esc(t.descriptionPattern)}</textarea>
         <div class="chips" data-target="desc">${chips}</div>
@@ -83,11 +105,11 @@ Thank you,
           <label class="stream-to-option">
             <input type="checkbox" id="streamToYoutube" ${(t.streamTo && t.streamTo.youtube) !== false ? 'checked' : ''} /> YouTube
           </label>
-          <label class="stream-to-option">
-            <input type="checkbox" id="streamToFacebook" ${t.streamTo && t.streamTo.facebook ? 'checked' : ''} /> Facebook
+          <label class="stream-to-option" id="streamToFacebookWrap">
+            <input type="checkbox" id="streamToFacebook" ${t.streamTo && t.streamTo.facebook && t.defaultPrivacy === 'public' ? 'checked' : ''} /> Facebook
           </label>
         </div>
-        <p class="hint">Default destinations for streams created from this template. Facebook needs the account connected in Settings, and simulcasts the YouTube feed (public/unlisted streams only).</p>
+        <p class="hint" id="streamToHint">Facebook is only available when Default privacy is Public. Unlisted/Private templates stay YouTube-only.</p>
       </div>
       <div class="field">
         <label>Favourite times <span class="muted">(up to 3)</span></label>
@@ -209,6 +231,34 @@ Thank you,
     syncAddTimeBtn();
     addTimeBtn.onclick = () => addTimeRow();
 
+    const privacySelect = el.querySelector('#privacy');
+    const fbCheckbox = el.querySelector('#streamToFacebook');
+    const fbWrap = el.querySelector('#streamToFacebookWrap');
+    const streamToHint = el.querySelector('#streamToHint');
+    const syncFacebookGate = () => {
+      const allowFb = privacySelect.value === 'public';
+      fbCheckbox.disabled = !allowFb;
+      if (!allowFb) fbCheckbox.checked = false;
+      fbWrap.classList.toggle('is-disabled', !allowFb);
+      streamToHint.textContent = allowFb
+        ? 'Public + Facebook: Restream posts the event name on every Facebook destination with the live video feed. YouTube uses the same title.'
+        : 'Facebook is only available when Default privacy is Public. Unlisted/Private templates stay YouTube-only.';
+    };
+    privacySelect.addEventListener('change', syncFacebookGate);
+    syncFacebookGate();
+
+    const allowCustomTitle = el.querySelector('#allowCustomTitle');
+    const allowCustomDescription = el.querySelector('#allowCustomDescription');
+    const titlePatternWrap = el.querySelector('#titlePatternWrap');
+    const descPatternWrap = el.querySelector('#descPatternWrap');
+    const syncCustomSwitches = () => {
+      titlePatternWrap.classList.toggle('hidden', allowCustomTitle.checked);
+      descPatternWrap.classList.toggle('hidden', allowCustomDescription.checked);
+    };
+    allowCustomTitle.addEventListener('change', syncCustomSwitches);
+    allowCustomDescription.addEventListener('change', syncCustomSwitches);
+    syncCustomSwitches();
+
     let removeCover = false;
     const coverFileInput = el.querySelector('#coverFile');
     const coverPreview = el.querySelector('#coverPreview');
@@ -254,12 +304,14 @@ Thank you,
 
       const payload = {
         name: el.querySelector('#name').value.trim(),
+        allowCustomTitle: allowCustomTitle.checked,
+        allowCustomDescription: allowCustomDescription.checked,
         titlePattern: el.querySelector('#title').value.trim(),
         descriptionPattern: el.querySelector('#desc').value,
         defaultPrivacy: el.querySelector('#privacy').value,
         streamTo: {
           youtube: el.querySelector('#streamToYoutube').checked,
-          facebook: el.querySelector('#streamToFacebook').checked,
+          facebook: privacySelect.value === 'public' && fbCheckbox.checked,
         },
         defaultTime: defaultTime || null,
         timePresets,
@@ -271,7 +323,9 @@ Thank you,
         extraFields,
       };
       if (!payload.name) return toast('Template needs a name.', 'err');
-      if (!payload.titlePattern) return toast('Template needs a title pattern.', 'err');
+      if (!payload.allowCustomTitle && !payload.titlePattern) {
+        return toast('Template needs a title pattern.', 'err');
+      }
 
       busy(e.target, true);
       const res = isEdit

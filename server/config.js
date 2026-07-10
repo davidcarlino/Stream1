@@ -48,6 +48,8 @@ const config = {
   google: {
     clientId: optional('GOOGLE_CLIENT_ID', ''),
     clientSecret: optional('GOOGLE_CLIENT_SECRET', ''),
+    // Browser-safe key for the public church-website embed (restrict by HTTP referrer).
+    youtubeApiKey: optional('YOUTUBE_API_KEY', ''),
     redirectUri: `${appBaseUrl}/oauth2callback`,
     // Full read/write is required for liveBroadcasts / liveStreams / playlists.
     scopes: ['https://www.googleapis.com/auth/youtube'],
@@ -67,7 +69,17 @@ const config = {
     clientId: optional('RESTREAM_CLIENT_ID', ''),
     clientSecret: optional('RESTREAM_CLIENT_SECRET', ''),
     redirectUri: `${appBaseUrl}/restream/oauth2callback`,
-    scopes: ['profile.default.read', 'channels.default.read', 'channels.default.write', 'stream.default.read'],
+    // Scopes are fixed on the Restream app at developers.restream.io (not in the
+    // authorize URL). Channel title pushes use channels.default.write via
+    // PATCH /user/channel-meta. The Autodetect dashboard label
+    // ("Stream via RTMP…") is not writable via Restream's public API.
+    scopes: [
+      'profile.default.read',
+      'channels.default.read',
+      'channels.default.write',
+      'stream.default.read',
+      'stream.default.write',
+    ],
   },
 
   gmail: {
@@ -138,6 +150,7 @@ function refreshRuntimeFromEnv() {
   );
   config.google.clientId = optional('GOOGLE_CLIENT_ID', '');
   config.google.clientSecret = optional('GOOGLE_CLIENT_SECRET', '');
+  config.google.youtubeApiKey = optional('YOUTUBE_API_KEY', '');
   config.google.redirectUri = `${config.appBaseUrl}/oauth2callback`;
   config.facebook.appId = optional('FACEBOOK_APP_ID', '');
   config.facebook.appSecret = optional('FACEBOOK_APP_SECRET', '');
